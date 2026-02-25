@@ -5,8 +5,8 @@ use snforge_std::{
 };
 use starknet::ContractAddress;
 use stela::interfaces::istela::{IStelaProtocolDispatcher, IStelaProtocolDispatcherTrait};
-use stela::types::inscription::InscriptionParams;
 use stela::types::asset::{Asset, AssetType};
+use stela::types::inscription::InscriptionParams;
 use super::mocks::mock_erc20::{IMockERC20Dispatcher, IMockERC20DispatcherTrait};
 use super::mocks::mock_erc721::IMockERC721Dispatcher;
 use super::mocks::mock_registry::{IMockRegistryDispatcher, IMockRegistryDispatcherTrait};

@@ -8,8 +8,8 @@ use snforge_std::{
     stop_cheat_block_timestamp_global, stop_cheat_caller_address,
 };
 use stela::interfaces::istela::IStelaProtocolDispatcherTrait;
-use stela::types::inscription::InscriptionParams;
 use stela::types::asset::{Asset, AssetType};
+use stela::types::inscription::InscriptionParams;
 use stela::utils::share_math::MAX_BPS;
 use super::mocks::mock_erc20::IMockERC20DispatcherTrait;
 use super::test_utils::{
