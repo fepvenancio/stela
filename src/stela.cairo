@@ -7,6 +7,9 @@ pub mod StelaProtocol {
     use core::num::traits::Zero;
     use core::poseidon::PoseidonTrait;
     use openzeppelin_access::ownable::OwnableComponent;
+
+    // Signed order imports
+    use openzeppelin_interfaces::account::accounts::{ISRC6Dispatcher, ISRC6DispatcherTrait};
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
 
     // Token dispatchers from openzeppelin_interfaces
@@ -17,6 +20,7 @@ pub mod StelaProtocol {
 
     // OpenZeppelin components
     use openzeppelin_token::erc1155::{ERC1155Component, ERC1155HooksEmptyImpl};
+    use openzeppelin_utils::snip12::{OffchainMessageHash, SNIP12Metadata, StructHash};
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess, StoragePointerWriteAccess,
     };
@@ -29,6 +33,7 @@ pub mod StelaProtocol {
     // Local imports
     use crate::types::asset::{Asset, AssetType};
     use crate::types::inscription::{InscriptionParams, StoredInscription};
+    use crate::types::signed_order::SignedOrder;
     use crate::utils::share_math::{MAX_BPS, calculate_fee_shares, convert_to_shares, scale_by_percentage};
 
     /// Maximum number of assets per type (debt, interest, collateral) in a single inscription.
@@ -52,6 +57,17 @@ pub mod StelaProtocol {
 
     // ReentrancyGuard
     impl ReentrancyGuardInternalImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
+
+    // SNIP-12 domain separator for Stela — revision 1 (Poseidon)
+    // version() MUST be bumped to '2' if the contract is upgraded
+    impl SNIP12MetadataImpl of SNIP12Metadata {
+        fn name() -> felt252 {
+            'Stela'
+        }
+        fn version() -> felt252 {
+            '1'
+        }
+    }
 
     // ============================================================
     //                          STORAGE
@@ -91,6 +107,14 @@ pub mod StelaProtocol {
         inscriptions_nft: ContractAddress,
         registry: ContractAddress,
         implementation_hash: felt252,
+        // Signed order storage (order_hash -> registered)
+        signed_orders: Map<felt252, bool>,
+        // Cancellation registry (order_hash -> cancelled)
+        cancelled_orders: Map<felt252, bool>,
+        // Partial fill tracking (order_hash -> filled_bps in u256)
+        filled_amounts: Map<felt252, u256>,
+        // Maker nonce for bulk cancellation (maker_address -> min_valid_nonce)
+        maker_min_nonce: Map<ContractAddress, felt252>,
     }
 
     // ============================================================
@@ -114,6 +138,9 @@ pub mod StelaProtocol {
         InscriptionRepaid: InscriptionRepaid,
         InscriptionLiquidated: InscriptionLiquidated,
         SharesRedeemed: SharesRedeemed,
+        OrderFilled: OrderFilled,
+        OrderCancelled: OrderCancelled,
+        OrdersBulkCancelled: OrdersBulkCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -165,6 +192,31 @@ pub mod StelaProtocol {
         #[key]
         pub redeemer: ContractAddress,
         pub shares: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrderFilled {
+        #[key]
+        pub order_hash: felt252,
+        #[key]
+        pub taker: ContractAddress,
+        pub fill_bps: u256,
+        pub total_filled_bps: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrderCancelled {
+        #[key]
+        pub order_hash: felt252,
+        #[key]
+        pub maker: ContractAddress,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrdersBulkCancelled {
+        #[key]
+        pub maker: ContractAddress,
+        pub min_nonce: felt252,
     }
 
     // ============================================================
@@ -587,23 +639,77 @@ pub mod StelaProtocol {
             self.reentrancy_guard.end();
         }
 
-        // --- Signed order entry points (stubs — implementation in Plan 01-03) ---
+        // --- Signed order entry points ---
 
-        fn fill_signed_order(
-            ref self: ContractState,
-            order: crate::types::signed_order::SignedOrder,
-            signature: Array<felt252>,
-            fill_bps: u256,
-        ) {
-            panic!("not implemented")
+        fn fill_signed_order(ref self: ContractState, order: SignedOrder, signature: Array<felt252>, fill_bps: u256) {
+            self.reentrancy_guard.start();
+
+            let order_hash = order.hash_struct();
+            let caller = get_caller_address();
+            let timestamp = get_block_timestamp();
+
+            // 1. Expiry check — before any state mutation
+            assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED);
+
+            // 2. Cancellation check
+            assert(!self.cancelled_orders.read(order_hash), Errors::ORDER_CANCELLED);
+
+            // 3. Nonce check — order.nonce must be >= maker's min nonce
+            //    Convert felt252 to u256 for comparison since felt252 lacks PartialOrd
+            let min_nonce: felt252 = self.maker_min_nonce.read(order.maker);
+            let nonce_u256: u256 = order.nonce.into();
+            let min_nonce_u256: u256 = min_nonce.into();
+            assert(nonce_u256 >= min_nonce_u256, Errors::INVALID_NONCE);
+
+            // 4. Private taker check
+            let allowed = order.allowed_taker;
+            if !allowed.is_zero() {
+                assert(caller == allowed, Errors::UNAUTHORIZED_TAKER);
+            }
+
+            // 5. Self-trade prevention
+            assert(caller != order.maker, Errors::SELF_TRADE_NOT_ALLOWED);
+
+            // 6. Signature verification — first fill only
+            //    On subsequent fills the order is already registered; skip verification.
+            if !self.signed_orders.read(order_hash) {
+                let hash = order.get_message_hash(order.maker);
+                let is_valid = ISRC6Dispatcher { contract_address: order.maker }.is_valid_signature(hash, signature);
+                assert(is_valid == starknet::VALIDATED || is_valid == 1, Errors::INVALID_SIGNATURE);
+                // Register the order on-chain (lazy registration)
+                self.signed_orders.write(order_hash, true);
+            }
+
+            // 7. Atomic partial fill accounting — u256 only, no felt252
+            //    Write BEFORE external calls (checks-effects-interactions)
+            let filled = self.filled_amounts.read(order_hash);
+            assert(filled + fill_bps <= MAX_BPS, Errors::OVERFILL);
+            let new_total = filled + fill_bps;
+            self.filled_amounts.write(order_hash, new_total);
+
+            // 8. Emit event
+            self.emit(OrderFilled { order_hash, taker: caller, fill_bps, total_filled_bps: new_total });
+
+            self.reentrancy_guard.end();
         }
 
-        fn cancel_order(ref self: ContractState, order: crate::types::signed_order::SignedOrder) {
-            panic!("not implemented")
+        fn cancel_order(ref self: ContractState, order: SignedOrder) {
+            let caller = get_caller_address();
+            // Only maker can cancel
+            assert(caller == order.maker, Errors::UNAUTHORIZED);
+
+            let order_hash = order.hash_struct();
+            self.cancelled_orders.write(order_hash, true);
+
+            self.emit(OrderCancelled { order_hash, maker: caller });
         }
 
         fn cancel_orders_by_nonce(ref self: ContractState, min_nonce: felt252) {
-            panic!("not implemented")
+            let caller = get_caller_address();
+            // Set the minimum valid nonce — all orders with nonce < min_nonce are invalid
+            self.maker_min_nonce.write(caller, min_nonce);
+
+            self.emit(OrdersBulkCancelled { maker: caller, min_nonce });
         }
 
         // --- View functions ---
@@ -627,19 +733,19 @@ pub mod StelaProtocol {
         }
 
         fn is_order_registered(self: @ContractState, order_hash: felt252) -> bool {
-            false // stub — implementation in Plan 01-03
+            self.signed_orders.read(order_hash)
         }
 
         fn is_order_cancelled(self: @ContractState, order_hash: felt252) -> bool {
-            false // stub — implementation in Plan 01-03
+            self.cancelled_orders.read(order_hash)
         }
 
         fn get_filled_bps(self: @ContractState, order_hash: felt252) -> u256 {
-            0 // stub — implementation in Plan 01-03
+            self.filled_amounts.read(order_hash)
         }
 
         fn get_maker_min_nonce(self: @ContractState, maker: ContractAddress) -> felt252 {
-            0 // stub — implementation in Plan 01-03
+            self.maker_min_nonce.read(maker)
         }
 
         // --- Admin functions ---
