@@ -12,6 +12,7 @@ openzeppelin_introspection = "3.0.0"
 openzeppelin_account = "3.0.0"
 openzeppelin_security = "3.0.0"
 openzeppelin_interfaces = "2.1.0"
+openzeppelin_utils = "2.1.0"
 
 [dev-dependencies]
 openzeppelin_testing = "6.4.0"
