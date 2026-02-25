@@ -25,10 +25,10 @@ pub mod StelaProtocol {
     use crate::interfaces::ierc721_mintable::{IERC721MintableDispatcher, IERC721MintableDispatcherTrait};
     use crate::interfaces::ilocker::{ILockerAccountDispatcher, ILockerAccountDispatcherTrait};
     use crate::interfaces::iregistry::{IRegistryDispatcher, IRegistryDispatcherTrait};
-    use crate::types::inscription::{InscriptionParams, StoredInscription};
 
     // Local imports
     use crate::types::asset::{Asset, AssetType};
+    use crate::types::inscription::{InscriptionParams, StoredInscription};
     use crate::utils::share_math::{MAX_BPS, calculate_fee_shares, convert_to_shares, scale_by_percentage};
 
     /// Maximum number of assets per type (debt, interest, collateral) in a single inscription.
@@ -587,6 +587,25 @@ pub mod StelaProtocol {
             self.reentrancy_guard.end();
         }
 
+        // --- Signed order entry points (stubs — implementation in Plan 01-03) ---
+
+        fn fill_signed_order(
+            ref self: ContractState,
+            order: crate::types::signed_order::SignedOrder,
+            signature: Array<felt252>,
+            fill_bps: u256,
+        ) {
+            panic!("not implemented")
+        }
+
+        fn cancel_order(ref self: ContractState, order: crate::types::signed_order::SignedOrder) {
+            panic!("not implemented")
+        }
+
+        fn cancel_orders_by_nonce(ref self: ContractState, min_nonce: felt252) {
+            panic!("not implemented")
+        }
+
         // --- View functions ---
 
         fn get_inscription(self: @ContractState, inscription_id: u256) -> StoredInscription {
@@ -605,6 +624,22 @@ pub mod StelaProtocol {
 
         fn get_inscription_fee(self: @ContractState) -> u256 {
             self.inscription_fee.read()
+        }
+
+        fn is_order_registered(self: @ContractState, order_hash: felt252) -> bool {
+            false // stub — implementation in Plan 01-03
+        }
+
+        fn is_order_cancelled(self: @ContractState, order_hash: felt252) -> bool {
+            false // stub — implementation in Plan 01-03
+        }
+
+        fn get_filled_bps(self: @ContractState, order_hash: felt252) -> u256 {
+            0 // stub — implementation in Plan 01-03
+        }
+
+        fn get_maker_min_nonce(self: @ContractState, maker: ContractAddress) -> felt252 {
+            0 // stub — implementation in Plan 01-03
         }
 
         // --- Admin functions ---

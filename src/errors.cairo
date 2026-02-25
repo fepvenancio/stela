@@ -26,4 +26,14 @@ pub mod Errors {
     pub const ZERO_IMPL_HASH: felt252 = 'STELA: zero impl hash';
     pub const NFT_NOT_FUNGIBLE: felt252 = 'STELA: nft not fungible';
     pub const TOO_MANY_ASSETS: felt252 = 'STELA: too many assets';
+
+    // Signed order errors
+    pub const ORDER_EXPIRED: felt252 = 'STELA: order expired';
+    pub const ORDER_CANCELLED: felt252 = 'STELA: order cancelled';
+    pub const INVALID_SIGNATURE: felt252 = 'STELA: invalid signature';
+    pub const UNAUTHORIZED_TAKER: felt252 = 'STELA: unauthorized taker';
+    pub const OVERFILL: felt252 = 'STELA: overfill';
+    pub const SELF_TRADE_NOT_ALLOWED: felt252 = 'STELA: self trade';
+    pub const ORDER_NOT_REGISTERED: felt252 = 'STELA: order not registered';
+    pub const INVALID_NONCE: felt252 = 'STELA: invalid nonce';
 }
