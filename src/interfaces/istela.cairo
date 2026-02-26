@@ -3,6 +3,7 @@
 use starknet::ContractAddress;
 use crate::types::asset::Asset;
 use crate::types::inscription::{InscriptionParams, StoredInscription};
+use crate::types::signed_order::SignedOrder;
 
 #[starknet::interface]
 pub trait IStelaProtocol<TContractState> {
@@ -66,6 +67,22 @@ pub trait IStelaProtocol<TContractState> {
         lender_sig: Array<felt252>,
     );
 
+    // --- Signed order matching engine ---
+
+    /// Fill a signed order. On first fill, verifies the maker's SNIP-12 signature and
+    /// registers the order on-chain. Subsequent fills skip signature verification.
+    /// `fill_bps` is the fill percentage requested in BPS (max 10,000).
+    fn fill_signed_order(
+        ref self: TContractState, order: SignedOrder, signature: Array<felt252>, fill_bps: u256,
+    );
+
+    /// Cancel a specific signed order. Only callable by the maker.
+    fn cancel_order(ref self: TContractState, order: SignedOrder);
+
+    /// Cancel all orders with nonce strictly less than `min_nonce`. Callable by any maker
+    /// to invalidate all outstanding orders with an old nonce in a single transaction.
+    fn cancel_orders_by_nonce(ref self: TContractState, min_nonce: felt252);
+
     // --- View functions ---
 
     /// Get inscription details by ID.
@@ -92,6 +109,18 @@ pub trait IStelaProtocol<TContractState> {
 
     /// Check if the protocol is paused.
     fn is_paused(self: @TContractState) -> bool;
+
+    /// Returns true if the order has been registered on-chain (first fill completed).
+    fn is_order_registered(self: @TContractState, order_hash: felt252) -> bool;
+
+    /// Returns true if the order has been cancelled.
+    fn is_order_cancelled(self: @TContractState, order_hash: felt252) -> bool;
+
+    /// Returns the current filled BPS for a signed order.
+    fn get_filled_bps(self: @TContractState, order_hash: felt252) -> u256;
+
+    /// Returns the minimum valid nonce for a maker (orders with nonce < this are invalid).
+    fn get_maker_min_nonce(self: @TContractState, maker: ContractAddress) -> felt252;
 
     // --- Admin functions ---
 

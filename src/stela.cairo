@@ -10,8 +10,9 @@ pub mod StelaProtocol {
     use openzeppelin_interfaces::accounts::{ISRC6Dispatcher, ISRC6DispatcherTrait};
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
     use openzeppelin_utils::cryptography::nonces::NoncesComponent;
-    use openzeppelin_utils::cryptography::snip12::OffchainMessageHash;
+    use openzeppelin_utils::cryptography::snip12::{OffchainMessageHash, StructHash};
     use crate::snip12::{InscriptionOrder, LendOffer, hash_assets};
+    use crate::types::signed_order::SignedOrder;
 
     // Token dispatchers from openzeppelin_interfaces
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
@@ -110,6 +111,11 @@ pub mod StelaProtocol {
         implementation_hash: felt252,
         // Relayer fee (in BPS, separate from inscription_fee)
         relayer_fee: u256,
+        // Signed order storage (matching engine)
+        signed_orders: Map<felt252, bool>,
+        cancelled_orders: Map<felt252, bool>,
+        filled_amounts: Map<felt252, u256>,
+        maker_min_nonce: Map<ContractAddress, felt252>,
     }
 
     // ============================================================
@@ -138,6 +144,9 @@ pub mod StelaProtocol {
         InscriptionLiquidated: InscriptionLiquidated,
         SharesRedeemed: SharesRedeemed,
         OrderSettled: OrderSettled,
+        OrderFilled: OrderFilled,
+        OrderCancelled: OrderCancelled,
+        OrdersBulkCancelled: OrdersBulkCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -201,6 +210,32 @@ pub mod StelaProtocol {
         pub lender: ContractAddress,
         pub relayer: ContractAddress,
         pub relayer_fee_amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrderFilled {
+        #[key]
+        pub inscription_id: u256,
+        #[key]
+        pub order_hash: felt252,
+        #[key]
+        pub taker: ContractAddress,
+        pub fill_bps: u256,
+        pub total_filled_bps: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrderCancelled {
+        #[key]
+        pub order_hash: felt252,
+        pub maker: ContractAddress,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrdersBulkCancelled {
+        #[key]
+        pub maker: ContractAddress,
+        pub new_min_nonce: felt252,
     }
 
     // SNIP-12 domain metadata (used by OffchainMessageHash)
@@ -392,142 +427,7 @@ pub mod StelaProtocol {
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
-            let timestamp = get_block_timestamp();
-
-            // Load inscription
-            let mut inscription = self.inscriptions.read(inscription_id);
-
-            // Validate inscription exists
-            assert(!inscription.borrower.is_zero() || !inscription.lender.is_zero(), Errors::INVALID_INSCRIPTION);
-
-            // Validate not expired
-            assert(timestamp <= inscription.deadline, Errors::INSCRIPTION_EXPIRED);
-
-            // Determine actual debt percentage to use
-            let actual_percentage = if inscription.multi_lender {
-                // Validate doesn't exceed remaining
-                assert(issued_debt_percentage > 0, Errors::ZERO_SHARES);
-                assert(inscription.issued_debt_percentage + issued_debt_percentage <= MAX_BPS, Errors::EXCEEDS_MAX_BPS);
-                issued_debt_percentage
-            } else {
-                // Single lender takes 100% — prevent double-sign (C1 fix)
-                assert(inscription.issued_debt_percentage == 0, Errors::ALREADY_SIGNED);
-                MAX_BPS
-            };
-
-            // Determine borrower and lender
-            let (borrower, lender) = if !inscription.borrower.is_zero() {
-                // Creator was borrower, caller is lender
-                (inscription.borrower, caller)
-            } else {
-                // Creator was lender, caller is borrower
-                (caller, inscription.lender)
-            };
-
-            // Track whether this is the first fill
-            let is_first_fill = inscription.issued_debt_percentage == 0;
-
-            // Check if this is an instant swap (duration = 0)
-            let is_swap = inscription.duration == 0;
-
-            // Track locker address (set on first fill, read from storage on subsequent)
-            let mut locker_addr: ContractAddress = Zero::zero();
-
-            // On first fill: set borrower/lender, mint NFT, create TBA, set signed_at
-            if is_first_fill {
-                // Set signed_at timestamp (loan activation time)
-                inscription.signed_at = timestamp;
-
-                // Only set borrower/lender on first fill to prevent overwrite
-                inscription.borrower = borrower;
-                inscription.lender = lender;
-
-                // Mint inscription NFT to borrower
-                let nft_contract = self.inscriptions_nft.read();
-                let nft = IERC721MintableDispatcher { contract_address: nft_contract };
-                nft.mint(borrower, inscription_id);
-
-                // Create TBA via registry (not needed for instant swaps)
-                if !is_swap {
-                    let registry_contract = self.registry.read();
-                    let registry = IRegistryDispatcher { contract_address: registry_contract };
-                    locker_addr = registry
-                        .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
-                    assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
-
-                    // Store locker address
-                    self.lockers.write(inscription_id, locker_addr);
-                    self.is_locker.write(locker_addr, true);
-                }
-            } else {
-                locker_addr = self.lockers.read(inscription_id);
-            }
-
-            // Calculate shares
-            let current_supply = self.total_supply.read(inscription_id);
-            let shares = convert_to_shares(actual_percentage, current_supply, inscription.issued_debt_percentage);
-
-            // Calculate and mint fee shares
-            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
-            let total_new_shares = shares + fee_shares;
-
-            // Mint lender shares (use update to avoid acceptance check on non-contract addresses)
-            self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
-
-            // Mint fee shares to treasury
-            if fee_shares > 0 {
-                let treasury = self.treasury.read();
-                self.erc1155.update(Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span());
-            }
-
-            // Update total supply
-            self.total_supply.write(inscription_id, current_supply + total_new_shares);
-
-            if is_swap {
-                // Instant swap: transfer collateral directly to contract (no locker)
-                self
-                    ._collect_collateral_for_swap(
-                        borrower,
-                        inscription_id,
-                        inscription.collateral_asset_count,
-                        actual_percentage,
-                        is_first_fill,
-                    );
-                // Mark as liquidated immediately — lenders can redeem collateral right away
-                inscription.liquidated = true;
-            } else {
-                // Standard loan: lock collateral to locker TBA
-                if !locker_addr.is_zero() {
-                    self
-                        ._lock_collateral(
-                            borrower,
-                            locker_addr,
-                            inscription_id,
-                            inscription.collateral_asset_count,
-                            actual_percentage,
-                            is_first_fill,
-                        );
-                }
-            }
-
-            // Update inscription state
-            inscription.issued_debt_percentage = inscription.issued_debt_percentage + actual_percentage;
-            self.inscriptions.write(inscription_id, inscription);
-
-            // Issue debt from lender to borrower (proportional)
-            self._issue_debt(lender, borrower, inscription_id, inscription.debt_asset_count, actual_percentage);
-
-            // Emit event
-            self
-                .emit(
-                    InscriptionSigned {
-                        inscription_id,
-                        borrower,
-                        lender,
-                        issued_debt_percentage: actual_percentage,
-                        shares_minted: shares,
-                    },
-                );
+            self._fill_inscription(inscription_id, issued_debt_percentage, caller);
 
             self.reentrancy_guard.end();
         }
@@ -711,6 +611,26 @@ pub mod StelaProtocol {
         /// operations (create, sign, repay, liquidate, redeem, settle) are blocked.
         fn is_paused(self: @ContractState) -> bool {
             self.pausable.Pausable_paused.read()
+        }
+
+        /// Returns true if the order has been registered on-chain (first fill completed).
+        fn is_order_registered(self: @ContractState, order_hash: felt252) -> bool {
+            self.signed_orders.read(order_hash)
+        }
+
+        /// Returns true if the order has been cancelled.
+        fn is_order_cancelled(self: @ContractState, order_hash: felt252) -> bool {
+            self.cancelled_orders.read(order_hash)
+        }
+
+        /// Returns the current filled BPS for a signed order.
+        fn get_filled_bps(self: @ContractState, order_hash: felt252) -> u256 {
+            self.filled_amounts.read(order_hash)
+        }
+
+        /// Returns the minimum valid nonce for a maker (orders with nonce < this are invalid).
+        fn get_maker_min_nonce(self: @ContractState, maker: ContractAddress) -> felt252 {
+            self.maker_min_nonce.read(maker)
         }
 
         // --- Admin functions (all require owner) ---
@@ -939,6 +859,115 @@ pub mod StelaProtocol {
             self.reentrancy_guard.end();
         }
 
+        // --- Signed order matching engine ---
+
+        /// Fill a signed order. On first fill, verifies the maker's SNIP-12 signature and
+        /// registers the order on-chain. Subsequent fills skip signature verification.
+        fn fill_signed_order(
+            ref self: ContractState, order: SignedOrder, signature: Array<felt252>, fill_bps: u256,
+        ) {
+            self.pausable.assert_not_paused();
+            self.reentrancy_guard.start();
+
+            let caller = get_caller_address();
+            let timestamp = get_block_timestamp();
+
+            // 1. Self-trade prevention
+            assert(caller != order.maker, Errors::SELF_TRADE_NOT_ALLOWED);
+
+            // 2. Private taker check
+            let zero_address: ContractAddress = Zero::zero();
+            if order.allowed_taker != zero_address {
+                assert(caller == order.allowed_taker, Errors::UNAUTHORIZED_TAKER);
+            }
+
+            // 3. Deadline check
+            assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED);
+
+            // 4. Compute order hash for storage lookups
+            let order_hash = order.hash_struct();
+
+            // 5. Nonce check (bulk invalidation)
+            // Compare as u256 since felt252 doesn't implement PartialOrd
+            let min_nonce = self.maker_min_nonce.read(order.maker);
+            let nonce_u256: u256 = order.nonce.into();
+            let min_nonce_u256: u256 = min_nonce.into();
+            assert(nonce_u256 >= min_nonce_u256, Errors::INVALID_NONCE);
+
+            // 6. Cancelled check
+            assert(!self.cancelled_orders.read(order_hash), Errors::ORDER_CANCELLED);
+
+            // 7. Min fill check
+            if order.min_fill_bps > 0 {
+                assert(fill_bps >= order.min_fill_bps, Errors::MIN_FILL_NOT_MET);
+            }
+
+            // 8. Overfill check
+            let current_filled = self.filled_amounts.read(order_hash);
+            assert(current_filled + fill_bps <= order.bps, Errors::OVERFILL);
+
+            // 9/10. First fill: verify signature and register. Subsequent: check registered.
+            let is_registered = self.signed_orders.read(order_hash);
+            if !is_registered {
+                // First fill: verify ISRC6 signature
+                let msg_hash = order.get_message_hash(order.maker);
+                let maker_account = ISRC6Dispatcher { contract_address: order.maker };
+                let sig_valid = maker_account.is_valid_signature(msg_hash, signature);
+                assert(sig_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+
+                // Register order on-chain
+                self.signed_orders.write(order_hash, true);
+            } else {
+                // Already registered -- no signature needed
+                assert(is_registered, Errors::ORDER_NOT_REGISTERED);
+            }
+
+            // 11. Call the shared fill logic to do the actual inscription fill
+            self._fill_inscription(order.inscription_id, fill_bps, caller);
+
+            // 12. Update filled amounts
+            self.filled_amounts.write(order_hash, current_filled + fill_bps);
+
+            // 13. Emit OrderFilled event
+            self
+                .emit(
+                    OrderFilled {
+                        inscription_id: order.inscription_id,
+                        order_hash,
+                        taker: caller,
+                        fill_bps,
+                        total_filled_bps: current_filled + fill_bps,
+                    },
+                );
+
+            self.reentrancy_guard.end();
+        }
+
+        /// Cancel a specific signed order. Only callable by the maker.
+        fn cancel_order(ref self: ContractState, order: SignedOrder) {
+            let caller = get_caller_address();
+            assert(caller == order.maker, Errors::UNAUTHORIZED);
+
+            let order_hash = order.hash_struct();
+            self.cancelled_orders.write(order_hash, true);
+
+            self.emit(OrderCancelled { order_hash, maker: caller });
+        }
+
+        /// Cancel all orders with nonce strictly less than `min_nonce`.
+        fn cancel_orders_by_nonce(ref self: ContractState, min_nonce: felt252) {
+            let caller = get_caller_address();
+            let current_min = self.maker_min_nonce.read(caller);
+            // Must strictly increase to prevent no-op calls
+            // Compare as u256 since felt252 doesn't implement PartialOrd
+            let min_nonce_u256: u256 = min_nonce.into();
+            let current_min_u256: u256 = current_min.into();
+            assert(min_nonce_u256 > current_min_u256, Errors::INVALID_NONCE);
+            self.maker_min_nonce.write(caller, min_nonce);
+
+            self.emit(OrdersBulkCancelled { maker: caller, new_min_nonce: min_nonce });
+        }
+
         /// Get the current nonce for an address. Used by off-chain signing (SNIP-12)
         /// to prevent replay attacks. Incremented on each settle() call.
         fn nonces(self: @ContractState, owner: ContractAddress) -> felt252 {
@@ -996,6 +1025,165 @@ pub mod StelaProtocol {
 
     #[generate_trait]
     impl InternalImpl of InternalTrait {
+        /// Core inscription fill logic shared by sign_inscription and fill_signed_order.
+        /// Takes the lender/filler address as a parameter instead of calling get_caller_address(),
+        /// so both entry points can use it with the correct address.
+        fn _fill_inscription(
+            ref self: ContractState, inscription_id: u256, issued_debt_percentage: u256, filler: ContractAddress,
+        ) {
+            let timestamp = get_block_timestamp();
+
+            // Load inscription
+            let mut inscription = self.inscriptions.read(inscription_id);
+
+            // Validate inscription exists
+            assert(
+                !inscription.borrower.is_zero() || !inscription.lender.is_zero(), Errors::INVALID_INSCRIPTION,
+            );
+
+            // Validate not expired
+            assert(timestamp <= inscription.deadline, Errors::INSCRIPTION_EXPIRED);
+
+            // Determine actual debt percentage to use
+            let actual_percentage = if inscription.multi_lender {
+                // Validate doesn't exceed remaining
+                assert(issued_debt_percentage > 0, Errors::ZERO_SHARES);
+                assert(
+                    inscription.issued_debt_percentage + issued_debt_percentage <= MAX_BPS, Errors::EXCEEDS_MAX_BPS,
+                );
+                issued_debt_percentage
+            } else {
+                // Single lender takes 100% -- prevent double-sign (C1 fix)
+                assert(inscription.issued_debt_percentage == 0, Errors::ALREADY_SIGNED);
+                MAX_BPS
+            };
+
+            // Determine borrower and lender
+            let (borrower, lender) = if !inscription.borrower.is_zero() {
+                // Creator was borrower, filler is lender
+                (inscription.borrower, filler)
+            } else {
+                // Creator was lender, filler is borrower
+                (filler, inscription.lender)
+            };
+
+            // Track whether this is the first fill
+            let is_first_fill = inscription.issued_debt_percentage == 0;
+
+            // Check if this is an instant swap (duration = 0)
+            let is_swap = inscription.duration == 0;
+
+            // Track locker address (set on first fill, read from storage on subsequent)
+            let mut locker_addr: ContractAddress = Zero::zero();
+
+            // On first fill: set borrower/lender, mint NFT, create TBA, set signed_at
+            if is_first_fill {
+                // Set signed_at timestamp (loan activation time)
+                inscription.signed_at = timestamp;
+
+                // Only set borrower/lender on first fill to prevent overwrite
+                inscription.borrower = borrower;
+                inscription.lender = lender;
+
+                // Mint inscription NFT to borrower
+                let nft_contract = self.inscriptions_nft.read();
+                let nft = IERC721MintableDispatcher { contract_address: nft_contract };
+                nft.mint(borrower, inscription_id);
+
+                // Create TBA via registry (not needed for instant swaps)
+                if !is_swap {
+                    let registry_contract = self.registry.read();
+                    let registry = IRegistryDispatcher { contract_address: registry_contract };
+                    locker_addr = registry
+                        .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
+                    assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
+
+                    // Store locker address
+                    self.lockers.write(inscription_id, locker_addr);
+                    self.is_locker.write(locker_addr, true);
+                }
+            } else {
+                locker_addr = self.lockers.read(inscription_id);
+            }
+
+            // Calculate shares
+            let current_supply = self.total_supply.read(inscription_id);
+            let shares = convert_to_shares(
+                actual_percentage, current_supply, inscription.issued_debt_percentage,
+            );
+
+            // Calculate and mint fee shares
+            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
+            let total_new_shares = shares + fee_shares;
+
+            // Mint lender shares (use update to avoid acceptance check on non-contract addresses)
+            self
+                .erc1155
+                .update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
+
+            // Mint fee shares to treasury
+            if fee_shares > 0 {
+                let treasury = self.treasury.read();
+                self
+                    .erc1155
+                    .update(
+                        Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span(),
+                    );
+            }
+
+            // Update total supply
+            self.total_supply.write(inscription_id, current_supply + total_new_shares);
+
+            if is_swap {
+                // Instant swap: transfer collateral directly to contract (no locker)
+                self
+                    ._collect_collateral_for_swap(
+                        borrower,
+                        inscription_id,
+                        inscription.collateral_asset_count,
+                        actual_percentage,
+                        is_first_fill,
+                    );
+                // Mark as liquidated immediately -- lenders can redeem collateral right away
+                inscription.liquidated = true;
+            } else {
+                // Standard loan: lock collateral to locker TBA
+                if !locker_addr.is_zero() {
+                    self
+                        ._lock_collateral(
+                            borrower,
+                            locker_addr,
+                            inscription_id,
+                            inscription.collateral_asset_count,
+                            actual_percentage,
+                            is_first_fill,
+                        );
+                }
+            }
+
+            // Update inscription state
+            inscription.issued_debt_percentage = inscription.issued_debt_percentage + actual_percentage;
+            self.inscriptions.write(inscription_id, inscription);
+
+            // Issue debt from lender to borrower (proportional)
+            self
+                ._issue_debt(
+                    lender, borrower, inscription_id, inscription.debt_asset_count, actual_percentage,
+                );
+
+            // Emit event
+            self
+                .emit(
+                    InscriptionSigned {
+                        inscription_id,
+                        borrower,
+                        lender,
+                        issued_debt_percentage: actual_percentage,
+                        shares_minted: shares,
+                    },
+                );
+        }
+
         /// Validate that each asset has a non-zero contract address
         /// and that fungible assets (ERC20/ERC4626/ERC1155) have value > 0.
         fn _validate_assets(self: @ContractState, assets: Span<Asset>) {

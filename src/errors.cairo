@@ -45,4 +45,12 @@ pub mod Errors {
     pub const INVALID_NONCE: felt252 = 'STELA: invalid nonce';
     pub const ORDER_EXPIRED: felt252 = 'STELA: order expired';
     pub const INVALID_ORDER: felt252 = 'STELA: invalid order';
+
+    // --- Signed order matching engine ---
+    pub const ORDER_CANCELLED: felt252 = 'STELA: order cancelled';
+    pub const UNAUTHORIZED_TAKER: felt252 = 'STELA: unauthorized taker';
+    pub const OVERFILL: felt252 = 'STELA: overfill';
+    pub const SELF_TRADE_NOT_ALLOWED: felt252 = 'STELA: self trade';
+    pub const ORDER_NOT_REGISTERED: felt252 = 'STELA: order not registered';
+    pub const MIN_FILL_NOT_MET: felt252 = 'STELA: min fill not met';
 }
