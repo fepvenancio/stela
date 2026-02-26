@@ -946,6 +946,15 @@ pub mod StelaProtocol {
             self.ownable.assert_only_owner();
             self.pausable.unpause();
         }
+
+        fn set_locker_allowed_selector(
+            ref self: ContractState, locker: ContractAddress, selector: felt252, allowed: bool,
+        ) {
+            self.ownable.assert_only_owner();
+            assert(self.is_locker.read(locker), Errors::INVALID_ADDRESS);
+            let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
+            locker_dispatcher.set_allowed_selector(selector, allowed);
+        }
     }
 
     // ============================================================

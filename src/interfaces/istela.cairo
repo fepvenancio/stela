@@ -87,4 +87,10 @@ pub trait IStelaProtocol<TContractState> {
 
     /// Unpause the protocol. Only owner.
     fn unpause(ref self: TContractState);
+
+    /// Set an allowed selector on a locker (for voting, delegation, etc while locked).
+    /// Only owner.
+    fn set_locker_allowed_selector(
+        ref self: TContractState, locker: ContractAddress, selector: felt252, allowed: bool,
+    );
 }

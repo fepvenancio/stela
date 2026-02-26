@@ -1,6 +1,8 @@
 // Locker Account — Token-Bound Account for Collateral
-// SNIP-14 compliant account that restricts ALL outgoing calls while locked.
-// Only the Stela contract can interact with a locked locker via pull_assets/unlock.
+// SNIP-14 compliant account with an allowlist-based lockdown.
+// When locked, only explicitly allowed selectors (e.g. vote, delegate) can be called.
+// All other outgoing calls are blocked. The Stela contract manages the allowlist
+// and interacts via pull_assets/unlock (external calls INTO the locker).
 
 #[starknet::contract(account)]
 pub mod LockerAccount {
@@ -10,7 +12,7 @@ pub mod LockerAccount {
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
     use openzeppelin_interfaces::erc721::{IERC721Dispatcher, IERC721DispatcherTrait};
     use starknet::account::Call;
-    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
+    use starknet::storage::{Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess, StoragePointerWriteAccess};
     use starknet::{ContractAddress, get_caller_address, get_contract_address};
 
     // Local imports
@@ -27,6 +29,8 @@ pub mod LockerAccount {
         stela_contract: ContractAddress,
         // Whether the locker is unlocked (restrictions removed)
         unlocked: bool,
+        // Allowlist: selector -> bool. Only these selectors can be called while locked.
+        allowed_selectors: Map<felt252, bool>,
     }
 
     // ============================================================
@@ -38,6 +42,7 @@ pub mod LockerAccount {
     pub enum Event {
         LockerUnlocked: LockerUnlocked,
         AssetsPulled: AssetsPulled,
+        AllowedSelectorUpdated: AllowedSelectorUpdated,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -51,6 +56,14 @@ pub mod LockerAccount {
         #[key]
         pub locker: ContractAddress,
         pub asset_count: u32,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct AllowedSelectorUpdated {
+        #[key]
+        pub locker: ContractAddress,
+        pub selector: felt252,
+        pub allowed: bool,
     }
 
     // ============================================================
@@ -71,7 +84,7 @@ pub mod LockerAccount {
     #[generate_trait]
     impl AccountImpl of AccountTrait {
         /// Validate a transaction.
-        /// When locked: reject ALL outgoing calls (prevents any asset extraction).
+        /// When locked: only allowlisted selectors can be called (e.g. vote, delegate).
         /// When unlocked: allow all calls (collateral returned to borrower after repayment).
         #[external(v0)]
         fn __validate__(self: @ContractState, calls: Span<Call>) -> felt252 {
@@ -80,22 +93,30 @@ pub mod LockerAccount {
                 return starknet::VALIDATED;
             }
 
-            // When locked, reject ALL outgoing calls.
-            // This is an allowlist approach: nothing is permitted while locked.
-            // The Stela contract interacts via pull_assets/unlock (external calls INTO
-            // the locker), which bypass __validate__ entirely.
-            assert(false, Errors::FORBIDDEN_SELECTOR);
+            // When locked, only allow calls whose selectors are in the allowlist.
+            // This lets the borrower vote, delegate, or showcase NFTs while
+            // preventing any asset transfers out of the locker.
+            let mut i: u32 = 0;
+            while i < calls.len() {
+                let call = *calls.at(i);
+                assert(self.allowed_selectors.read(call.selector), Errors::FORBIDDEN_SELECTOR);
+                i += 1;
+            };
             starknet::VALIDATED
         }
 
         /// Execute calls.
-        /// When locked, no calls should reach here (rejected by __validate__),
-        /// but we double-check as a safety measure.
+        /// When locked, only allowlisted selectors pass (defense-in-depth check).
         #[external(v0)]
         fn __execute__(ref self: ContractState, calls: Span<Call>) -> Array<Span<felt252>> {
-            // If locked, reject all calls (defense in depth)
+            // Defense in depth: re-check allowlist even if __validate__ passed
             if !self.unlocked.read() {
-                assert(false, Errors::FORBIDDEN_SELECTOR);
+                let mut i: u32 = 0;
+                while i < calls.len() {
+                    let call = *calls.at(i);
+                    assert(self.allowed_selectors.read(call.selector), Errors::FORBIDDEN_SELECTOR);
+                    i += 1;
+                };
             }
 
             // Execute all calls
@@ -150,9 +171,25 @@ pub mod LockerAccount {
             self.emit(LockerUnlocked { locker: get_contract_address() });
         }
 
+        /// Add or remove a selector from the allowlist.
+        /// Only callable by the Stela contract.
+        fn set_allowed_selector(ref self: ContractState, selector: felt252, allowed: bool) {
+            let caller = get_caller_address();
+            let stela = self.stela_contract.read();
+            assert(caller == stela, Errors::UNAUTHORIZED);
+
+            self.allowed_selectors.write(selector, allowed);
+            self.emit(AllowedSelectorUpdated { locker: get_contract_address(), selector, allowed });
+        }
+
         /// Check if the locker is currently unlocked.
         fn is_unlocked(self: @ContractState) -> bool {
             self.unlocked.read()
+        }
+
+        /// Check if a selector is in the allowlist.
+        fn is_selector_allowed(self: @ContractState, selector: felt252) -> bool {
+            self.allowed_selectors.read(selector)
         }
     }
 
