@@ -1,5 +1,5 @@
-// ILockerAccount — Token-bound account (TBA) interface for collateral locking
-// Phase 2: Define the full interface
+// ILockerAccount — Token-bound account (TBA) interface for collateral locking.
+// Implemented by LockerAccount (SNIP-14 compliant account with allowlist-based lockdown).
 
 use crate::types::asset::Asset;
 

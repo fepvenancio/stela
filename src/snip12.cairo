@@ -1,4 +1,6 @@
 // SNIP-12 typed data structures for off-chain signature settlement.
+// Defines InscriptionOrder (borrower) and LendOffer (lender) structs with their
+// StructHash implementations for EIP-712-style typed signing on StarkNet.
 
 use core::hash::{HashStateExTrait, HashStateTrait};
 use core::poseidon::PoseidonTrait;
@@ -6,19 +8,32 @@ use openzeppelin_utils::cryptography::snip12::StructHash;
 use starknet::ContractAddress;
 use crate::types::asset::{Asset, AssetType};
 
-/// Off-chain inscription order signed by the borrower.
+/// Off-chain inscription order signed by the borrower (SNIP-12 typed data).
+/// The borrower commits to loan terms without submitting a transaction.
+/// A relayer later submits this order along with the actual asset arrays via settle().
 #[derive(Copy, Drop, Hash, Serde)]
 pub struct InscriptionOrder {
+    /// The borrower's address (signer of this order).
     pub borrower: ContractAddress,
+    /// Poseidon hash of the debt asset array (verified against actual assets in settle).
     pub debt_hash: felt252,
+    /// Poseidon hash of the interest asset array.
     pub interest_hash: felt252,
+    /// Poseidon hash of the collateral asset array.
     pub collateral_hash: felt252,
+    /// Expected number of debt assets (must match actual array length).
     pub debt_count: u32,
+    /// Expected number of interest assets.
     pub interest_count: u32,
+    /// Expected number of collateral assets.
     pub collateral_count: u32,
+    /// Loan duration in seconds. 0 = instant swap.
     pub duration: u64,
+    /// Unix timestamp deadline for the order to be settled.
     pub deadline: u64,
+    /// Whether multiple lenders can partially fill this order.
     pub multi_lender: bool,
+    /// Borrower's nonce for replay protection (consumed on settle).
     pub nonce: felt252,
 }
 
@@ -36,12 +51,17 @@ impl InscriptionOrderStructHash of StructHash<InscriptionOrder> {
     }
 }
 
-/// Off-chain lend offer signed by the lender.
+/// Off-chain lend offer signed by the lender (SNIP-12 typed data).
+/// References a specific InscriptionOrder by its message hash, binding the offer to exact loan terms.
 #[derive(Copy, Drop, Hash, Serde)]
 pub struct LendOffer {
+    /// The SNIP-12 message hash of the InscriptionOrder this offer is for.
     pub order_hash: felt252,
+    /// The lender's address (signer of this offer).
     pub lender: ContractAddress,
+    /// The percentage of debt this lender wants to fill (in BPS). Ignored for single-lender orders.
     pub issued_debt_percentage: u256,
+    /// Lender's nonce for replay protection (consumed on settle).
     pub nonce: felt252,
 }
 
@@ -85,6 +105,8 @@ fn asset_type_to_felt(asset_type: AssetType) -> felt252 {
 }
 
 /// Hash an array of Assets into a single felt252 using Poseidon.
+/// Includes the array length as the first element to prevent length-extension attacks.
+/// Used to verify that asset arrays submitted in settle() match the off-chain order commitment.
 pub fn hash_assets(assets: Span<Asset>) -> felt252 {
     let mut hash_state = PoseidonTrait::new();
     hash_state = hash_state.update_with(assets.len());

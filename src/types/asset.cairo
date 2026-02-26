@@ -1,5 +1,4 @@
-// Asset types for Stela protocol
-// Phase 1: Implement these types
+// Asset types for Stela protocol.
 
 use starknet::ContractAddress;
 

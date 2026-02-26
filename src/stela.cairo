@@ -217,6 +217,9 @@ pub mod StelaProtocol {
     //                        CONSTRUCTOR
     // ============================================================
 
+    /// Initialize the Stela protocol.
+    /// Sets up ERC1155 (shares), Ownable, and protocol config.
+    /// Default inscription fee is 10 BPS (0.1%). Treasury defaults to owner.
     #[constructor]
     fn constructor(
         ref self: ContractState,
@@ -379,7 +382,11 @@ pub mod StelaProtocol {
             self.emit(InscriptionCancelled { inscription_id, creator: caller });
         }
 
-        /// Fill/sign an existing inscription.
+        /// Fill/sign an existing inscription by providing debt capital as lender (or collateral as borrower).
+        /// Single-lender: always fills 100%, ignores issued_debt_percentage.
+        /// Multi-lender: fills the specified percentage; multiple lenders can partially fill.
+        /// On first fill: mints NFT to borrower, creates TBA locker, sets signed_at.
+        /// For instant swaps (duration=0): collateral goes directly to contract, marked liquidated.
         fn sign_inscription(ref self: ContractState, inscription_id: u256, issued_debt_percentage: u256) {
             self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
@@ -672,59 +679,74 @@ pub mod StelaProtocol {
 
         // --- View functions ---
 
+        /// Get inscription details by ID. Returns a zero-initialized struct if not found.
         fn get_inscription(self: @ContractState, inscription_id: u256) -> StoredInscription {
             self.inscriptions.read(inscription_id)
         }
 
+        /// Get the locker (TBA) address for an inscription. Returns zero address if no locker
+        /// (e.g. instant swaps or unfilled inscriptions).
         fn get_locker(self: @ContractState, inscription_id: u256) -> ContractAddress {
             self.lockers.read(inscription_id)
         }
 
+        /// Preview the number of ERC1155 shares that would be minted for a given debt percentage.
         fn convert_to_shares(self: @ContractState, inscription_id: u256, issued_debt_percentage: u256) -> u256 {
             let inscription = self.inscriptions.read(inscription_id);
             let total_supply = self.total_supply.read(inscription_id);
             convert_to_shares(issued_debt_percentage, total_supply, inscription.issued_debt_percentage)
         }
 
+        /// Get the protocol fee in BPS applied to lender shares on each sign/settle.
         fn get_inscription_fee(self: @ContractState) -> u256 {
             self.inscription_fee.read()
         }
 
+        /// Get the treasury address that receives protocol fee shares.
         fn get_treasury(self: @ContractState) -> ContractAddress {
             self.treasury.read()
         }
 
+        /// Check if the protocol is currently paused. When paused, all state-changing
+        /// operations (create, sign, repay, liquidate, redeem, settle) are blocked.
         fn is_paused(self: @ContractState) -> bool {
             self.pausable.Pausable_paused.read()
         }
 
-        // --- Admin functions ---
+        // --- Admin functions (all require owner) ---
 
+        /// Set the protocol fee in BPS (e.g. 10 = 0.1%). Must not exceed MAX_BPS.
         fn set_inscription_fee(ref self: ContractState, fee: u256) {
             self.ownable.assert_only_owner();
             assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
             self.inscription_fee.write(fee);
         }
 
+        /// Set the treasury address that receives protocol fee shares. Must be non-zero.
         fn set_treasury(ref self: ContractState, treasury: ContractAddress) {
             self.ownable.assert_only_owner();
             assert(!treasury.is_zero(), Errors::INVALID_ADDRESS);
             self.treasury.write(treasury);
         }
 
+        /// Set the SNIP-14 registry address used to deploy locker TBAs. Must be non-zero.
         fn set_registry(ref self: ContractState, registry: ContractAddress) {
             self.ownable.assert_only_owner();
             assert(!registry.is_zero(), Errors::INVALID_ADDRESS);
             self.registry.write(registry);
         }
 
+        /// Set the inscriptions NFT contract address. Must be non-zero.
+        /// Each inscription gets a unique NFT minted to the borrower.
         fn set_inscriptions_nft(ref self: ContractState, inscriptions_nft: ContractAddress) {
             self.ownable.assert_only_owner();
             assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS);
             self.inscriptions_nft.write(inscriptions_nft);
         }
 
-        /// Settle an off-chain order with borrower + lender signatures.
+        /// Settle an off-chain signed order, creating and filling an inscription atomically.
+        /// Verifies SNIP-12 signatures for both borrower and lender, consumes nonces,
+        /// and deducts a relayer fee from the lender's debt transfer to the caller.
         fn settle(
             ref self: ContractState,
             order: InscriptionOrder,
@@ -917,36 +939,47 @@ pub mod StelaProtocol {
             self.reentrancy_guard.end();
         }
 
+        /// Get the current nonce for an address. Used by off-chain signing (SNIP-12)
+        /// to prevent replay attacks. Incremented on each settle() call.
         fn nonces(self: @ContractState, owner: ContractAddress) -> felt252 {
             self.nonces.Nonces_nonces.read(owner)
         }
 
+        /// Get the relayer fee in BPS, deducted from debt transfers during settle().
         fn get_relayer_fee(self: @ContractState) -> u256 {
             self.relayer_fee.read()
         }
 
+        /// Set the relayer fee in BPS (e.g. 50 = 0.5%). Must not exceed MAX_BPS. Only owner.
         fn set_relayer_fee(ref self: ContractState, fee: u256) {
             self.ownable.assert_only_owner();
             assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
             self.relayer_fee.write(fee);
         }
 
+        /// Set the locker implementation class hash used when deploying new TBA lockers.
+        /// Must be non-zero. Only owner.
         fn set_implementation_hash(ref self: ContractState, implementation_hash: felt252) {
             self.ownable.assert_only_owner();
             assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
             self.implementation_hash.write(implementation_hash);
         }
 
+        /// Pause the protocol, blocking all state-changing operations. Only owner.
         fn pause(ref self: ContractState) {
             self.ownable.assert_only_owner();
             self.pausable.pause();
         }
 
+        /// Unpause the protocol, resuming normal operations. Only owner.
         fn unpause(ref self: ContractState) {
             self.ownable.assert_only_owner();
             self.pausable.unpause();
         }
 
+        /// Add or remove an allowed selector on a specific locker TBA.
+        /// Allowed selectors let the borrower call certain functions (e.g. vote, delegate)
+        /// while the locker is locked. Only owner. Reverts if the address is not a known locker.
         fn set_locker_allowed_selector(
             ref self: ContractState, locker: ContractAddress, selector: felt252, allowed: bool,
         ) {

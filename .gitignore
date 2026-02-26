@@ -1,6 +1,8 @@
 .snfoundry_cache/
 target/
 .DS_Store
-
-
-
+.env
+.env.local
+.env*.secret
+.dev.vars
+*.secret
