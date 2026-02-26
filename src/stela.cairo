@@ -17,6 +17,7 @@ pub mod StelaProtocol {
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
     use openzeppelin_interfaces::erc721::{IERC721Dispatcher, IERC721DispatcherTrait};
     use openzeppelin_introspection::src5::SRC5Component;
+    use openzeppelin_security::pausable::PausableComponent;
     use openzeppelin_security::reentrancyguard::ReentrancyGuardComponent;
 
     // OpenZeppelin components
@@ -43,6 +44,7 @@ pub mod StelaProtocol {
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: SRC5Component, storage: src5, event: SRC5Event);
     component!(path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent);
+    component!(path: PausableComponent, storage: pausable, event: PausableEvent);
     component!(path: NoncesComponent, storage: nonces, event: NoncesEvent);
 
     // ERC1155 Mixin — exposes standard ERC1155 functions externally
@@ -57,6 +59,9 @@ pub mod StelaProtocol {
 
     // ReentrancyGuard
     impl ReentrancyGuardInternalImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
+
+    // Pausable
+    impl PausableInternalImpl = PausableComponent::InternalImpl<ContractState>;
 
     // Nonces
     impl NoncesInternalImpl = NoncesComponent::InternalImpl<ContractState>;
@@ -76,6 +81,8 @@ pub mod StelaProtocol {
         src5: SRC5Component::Storage,
         #[substorage(v0)]
         reentrancy_guard: ReentrancyGuardComponent::Storage,
+        #[substorage(v0)]
+        pausable: PausableComponent::Storage,
         #[substorage(v0)]
         nonces: NoncesComponent::Storage,
         // Protocol storage
@@ -120,6 +127,8 @@ pub mod StelaProtocol {
         SRC5Event: SRC5Component::Event,
         #[flat]
         ReentrancyGuardEvent: ReentrancyGuardComponent::Event,
+        #[flat]
+        PausableEvent: PausableComponent::Event,
         #[flat]
         NoncesEvent: NoncesComponent::Event,
         InscriptionCreated: InscriptionCreated,
@@ -212,13 +221,12 @@ pub mod StelaProtocol {
     fn constructor(
         ref self: ContractState,
         owner: ContractAddress,
-        treasury: ContractAddress,
         inscriptions_nft: ContractAddress,
         registry: ContractAddress,
         implementation_hash: felt252,
     ) {
         // Validate non-zero addresses and implementation hash
-        assert(!treasury.is_zero(), Errors::INVALID_ADDRESS);
+        assert(!owner.is_zero(), Errors::INVALID_ADDRESS);
         assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS);
         assert(!registry.is_zero(), Errors::INVALID_ADDRESS);
         assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
@@ -229,7 +237,8 @@ pub mod StelaProtocol {
         self.ownable.initializer(owner);
         // Set protocol config
         self.inscription_fee.write(10); // Default 10 BPS (0.1%)
-        self.treasury.write(treasury);
+        // Treasury defaults to owner/deployer — can be changed via set_treasury
+        self.treasury.write(owner);
         self.inscriptions_nft.write(inscriptions_nft);
         self.registry.write(registry);
         self.implementation_hash.write(implementation_hash);
@@ -243,6 +252,8 @@ pub mod StelaProtocol {
     impl StelaProtocolImpl of crate::interfaces::istela::IStelaProtocol<ContractState> {
         /// Create a new inscription. Returns the inscription ID.
         fn create_inscription(ref self: ContractState, params: InscriptionParams) -> u256 {
+            self.pausable.assert_not_paused();
+
             let caller = get_caller_address();
             let timestamp = get_block_timestamp();
 
@@ -265,6 +276,12 @@ pub mod StelaProtocol {
             // and can't be scaled by percentage for partial fills or pro-rata redemption
             self._validate_no_nfts(params.debt_assets.span());
             self._validate_no_nfts(params.interest_assets.span());
+
+            // ERC721 collateral cannot be used with multi-lender inscriptions
+            // because NFTs are indivisible and can't be split pro-rata among lenders
+            if params.multi_lender {
+                self._validate_no_nfts(params.collateral_assets.span());
+            }
 
             // Determine borrower and lender based on who creates
             let zero_address: ContractAddress = Zero::zero();
@@ -337,6 +354,9 @@ pub mod StelaProtocol {
             // Validate inscription hasn't been filled
             assert(inscription.issued_debt_percentage == 0, Errors::NOT_CANCELLABLE);
 
+            // Clear asset storage maps
+            self._clear_assets(inscription_id, inscription.debt_asset_count, inscription.interest_asset_count, inscription.collateral_asset_count);
+
             // Clear the inscription (set to default/zero)
             let zero_address: ContractAddress = Zero::zero();
             let cleared = StoredInscription {
@@ -361,6 +381,7 @@ pub mod StelaProtocol {
 
         /// Fill/sign an existing inscription.
         fn sign_inscription(ref self: ContractState, inscription_id: u256, issued_debt_percentage: u256) {
+            self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -399,6 +420,9 @@ pub mod StelaProtocol {
             // Track whether this is the first fill
             let is_first_fill = inscription.issued_debt_percentage == 0;
 
+            // Check if this is an instant swap (duration = 0)
+            let is_swap = inscription.duration == 0;
+
             // Track locker address (set on first fill, read from storage on subsequent)
             let mut locker_addr: ContractAddress = Zero::zero();
 
@@ -407,7 +431,7 @@ pub mod StelaProtocol {
                 // Set signed_at timestamp (loan activation time)
                 inscription.signed_at = timestamp;
 
-                // FIX: Only set borrower/lender on first fill to prevent overwrite
+                // Only set borrower/lender on first fill to prevent overwrite
                 inscription.borrower = borrower;
                 inscription.lender = lender;
 
@@ -416,15 +440,18 @@ pub mod StelaProtocol {
                 let nft = IERC721MintableDispatcher { contract_address: nft_contract };
                 nft.mint(borrower, inscription_id);
 
-                // Create TBA via registry
-                let registry_contract = self.registry.read();
-                let registry = IRegistryDispatcher { contract_address: registry_contract };
-                locker_addr = registry.create_account(self.implementation_hash.read(), nft_contract, inscription_id);
-                assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
+                // Create TBA via registry (not needed for instant swaps)
+                if !is_swap {
+                    let registry_contract = self.registry.read();
+                    let registry = IRegistryDispatcher { contract_address: registry_contract };
+                    locker_addr = registry
+                        .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
+                    assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
 
-                // Store locker address
-                self.lockers.write(inscription_id, locker_addr);
-                self.is_locker.write(locker_addr, true);
+                    // Store locker address
+                    self.lockers.write(inscription_id, locker_addr);
+                    self.is_locker.write(locker_addr, true);
+                }
             } else {
                 locker_addr = self.lockers.read(inscription_id);
             }
@@ -449,23 +476,36 @@ pub mod StelaProtocol {
             // Update total supply
             self.total_supply.write(inscription_id, current_supply + total_new_shares);
 
-            // Update inscription state — only update issued_debt_percentage, NOT borrower/lender
-            inscription.issued_debt_percentage = inscription.issued_debt_percentage + actual_percentage;
-            self.inscriptions.write(inscription_id, inscription);
-
-            // Lock collateral from borrower to locker (proportional)
-            // FIX: Pass is_first_fill to skip ERC721 transfers on subsequent fills
-            if !locker_addr.is_zero() {
+            if is_swap {
+                // Instant swap: transfer collateral directly to contract (no locker)
                 self
-                    ._lock_collateral(
+                    ._collect_collateral_for_swap(
                         borrower,
-                        locker_addr,
                         inscription_id,
                         inscription.collateral_asset_count,
                         actual_percentage,
                         is_first_fill,
                     );
+                // Mark as liquidated immediately — lenders can redeem collateral right away
+                inscription.liquidated = true;
+            } else {
+                // Standard loan: lock collateral to locker TBA
+                if !locker_addr.is_zero() {
+                    self
+                        ._lock_collateral(
+                            borrower,
+                            locker_addr,
+                            inscription_id,
+                            inscription.collateral_asset_count,
+                            actual_percentage,
+                            is_first_fill,
+                        );
+                }
             }
+
+            // Update inscription state
+            inscription.issued_debt_percentage = inscription.issued_debt_percentage + actual_percentage;
+            self.inscriptions.write(inscription_id, inscription);
 
             // Issue debt from lender to borrower (proportional)
             self._issue_debt(lender, borrower, inscription_id, inscription.debt_asset_count, actual_percentage);
@@ -485,8 +525,9 @@ pub mod StelaProtocol {
             self.reentrancy_guard.end();
         }
 
-        /// Repay an active inscription.
+        /// Repay an active inscription. Only callable by the borrower.
         fn repay(ref self: ContractState, inscription_id: u256) {
+            self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -501,6 +542,9 @@ pub mod StelaProtocol {
 
             // Validate inscription has been signed
             assert(inscription.signed_at > 0, Errors::INVALID_INSCRIPTION);
+
+            // Only borrower can repay
+            assert(caller == inscription.borrower, Errors::UNAUTHORIZED);
 
             // Validate timing: can repay anytime between signed_at and signed_at + duration
             let due_to = inscription.signed_at + inscription.duration;
@@ -536,6 +580,7 @@ pub mod StelaProtocol {
 
         /// Liquidate an expired, unrepaid inscription.
         fn liquidate(ref self: ContractState, inscription_id: u256) {
+            self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -576,6 +621,7 @@ pub mod StelaProtocol {
 
         /// Redeem shares for underlying assets.
         fn redeem(ref self: ContractState, inscription_id: u256, shares: u256) {
+            self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -644,6 +690,14 @@ pub mod StelaProtocol {
             self.inscription_fee.read()
         }
 
+        fn get_treasury(self: @ContractState) -> ContractAddress {
+            self.treasury.read()
+        }
+
+        fn is_paused(self: @ContractState) -> bool {
+            self.pausable.Pausable_paused.read()
+        }
+
         // --- Admin functions ---
 
         fn set_inscription_fee(ref self: ContractState, fee: u256) {
@@ -681,6 +735,7 @@ pub mod StelaProtocol {
             offer: LendOffer,
             lender_sig: Array<felt252>,
         ) {
+            self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -715,6 +770,11 @@ pub mod StelaProtocol {
             self._validate_no_nfts(debt_assets.span());
             self._validate_no_nfts(interest_assets.span());
 
+            // ERC721 collateral cannot be used with multi-lender
+            if order.multi_lender {
+                self._validate_no_nfts(collateral_assets.span());
+            }
+
             // Verify offer references this order
             let order_msg_hash = order.get_message_hash(order.borrower);
             assert(offer.order_hash == order_msg_hash, Errors::INVALID_ORDER);
@@ -734,15 +794,20 @@ pub mod StelaProtocol {
             self.nonces.use_checked_nonce(order.borrower, order.nonce);
             self.nonces.use_checked_nonce(offer.lender, offer.nonce);
 
-            // 6. Create inscription (reuse existing internal logic)
+            // 6. Create inscription
             let borrower = order.borrower;
             let lender = offer.lender;
+            let is_swap = order.duration == 0;
 
             // Compute inscription ID
             let inscription_id = self
                 ._compute_inscription_id(
                     borrower, lender, order.duration, order.deadline, timestamp, debt_assets.span(),
                 );
+
+            // Check inscription doesn't already exist (C3)
+            let existing = self.inscriptions.read(inscription_id);
+            assert(existing.borrower.is_zero() && existing.lender.is_zero(), Errors::INSCRIPTION_EXISTS);
 
             // Determine actual debt percentage
             let actual_percentage = if order.multi_lender {
@@ -762,7 +827,7 @@ pub mod StelaProtocol {
                 signed_at: timestamp,
                 issued_debt_percentage: actual_percentage,
                 is_repaid: false,
-                liquidated: false,
+                liquidated: is_swap, // Instant swap: mark as liquidated for immediate redemption
                 multi_lender: order.multi_lender,
                 debt_asset_count: debt_assets.len(),
                 interest_asset_count: interest_assets.len(),
@@ -780,14 +845,27 @@ pub mod StelaProtocol {
             let nft = IERC721MintableDispatcher { contract_address: nft_contract };
             nft.mint(borrower, inscription_id);
 
-            // Create TBA via registry
-            let registry_contract = self.registry.read();
-            let registry = IRegistryDispatcher { contract_address: registry_contract };
-            let locker_addr = registry
-                .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
-            assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
-            self.lockers.write(inscription_id, locker_addr);
-            self.is_locker.write(locker_addr, true);
+            if is_swap {
+                // Instant swap: transfer collateral directly to contract (no locker)
+                self
+                    ._collect_collateral_for_swap(
+                        borrower, inscription_id, collateral_assets.len(), actual_percentage, true,
+                    );
+            } else {
+                // Standard loan: create TBA locker and lock collateral
+                let registry_contract = self.registry.read();
+                let registry = IRegistryDispatcher { contract_address: registry_contract };
+                let locker_addr = registry
+                    .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
+                assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
+                self.lockers.write(inscription_id, locker_addr);
+                self.is_locker.write(locker_addr, true);
+
+                self
+                    ._lock_collateral(
+                        borrower, locker_addr, inscription_id, collateral_assets.len(), actual_percentage, true,
+                    );
+            }
 
             // Calculate shares
             let shares = convert_to_shares(actual_percentage, 0, 0);
@@ -809,12 +887,6 @@ pub mod StelaProtocol {
 
             // Update total supply
             self.total_supply.write(inscription_id, total_new_shares);
-
-            // Lock collateral from borrower to locker
-            self
-                ._lock_collateral(
-                    borrower, locker_addr, inscription_id, collateral_assets.len(), actual_percentage, true,
-                );
 
             // Issue debt from lender to borrower, deducting relayer fee from lender's transfer
             let relayer_fee_bps = self.relayer_fee.read();
@@ -857,6 +929,22 @@ pub mod StelaProtocol {
             self.ownable.assert_only_owner();
             assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
             self.relayer_fee.write(fee);
+        }
+
+        fn set_implementation_hash(ref self: ContractState, implementation_hash: felt252) {
+            self.ownable.assert_only_owner();
+            assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
+            self.implementation_hash.write(implementation_hash);
+        }
+
+        fn pause(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            self.pausable.pause();
+        }
+
+        fn unpause(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            self.pausable.unpause();
         }
     }
 
@@ -961,10 +1049,90 @@ pub mod StelaProtocol {
             };
         }
 
+        /// Clear all asset storage maps for a cancelled inscription (H2).
+        fn _clear_assets(
+            ref self: ContractState,
+            inscription_id: u256,
+            debt_count: u32,
+            interest_count: u32,
+            collateral_count: u32,
+        ) {
+            let zero_asset = Asset {
+                asset: Zero::zero(), asset_type: AssetType::ERC20, value: 0, token_id: 0,
+            };
+            let mut i: u32 = 0;
+            while i < debt_count {
+                self.inscription_debt_assets.write((inscription_id, i), zero_asset);
+                i += 1;
+            };
+            let mut j: u32 = 0;
+            while j < interest_count {
+                self.inscription_interest_assets.write((inscription_id, j), zero_asset);
+                j += 1;
+            };
+            let mut k: u32 = 0;
+            while k < collateral_count {
+                self.inscription_collateral_assets.write((inscription_id, k), zero_asset);
+                k += 1;
+            };
+        }
+
+        /// Collect collateral directly to the Stela contract for instant swaps (duration=0).
+        /// Transfers collateral from borrower to the contract and tracks balances,
+        /// skipping the locker TBA entirely.
+        fn _collect_collateral_for_swap(
+            ref self: ContractState,
+            from: ContractAddress,
+            inscription_id: u256,
+            collateral_count: u32,
+            percentage: u256,
+            is_first_fill: bool,
+        ) {
+            let this_contract = get_contract_address();
+            let mut i: u32 = 0;
+            while i < collateral_count {
+                let asset = self.inscription_collateral_assets.read((inscription_id, i));
+
+                // Skip ERC721 on subsequent fills (same as _lock_collateral)
+                let should_transfer = match asset.asset_type {
+                    AssetType::ERC721 => is_first_fill,
+                    _ => true,
+                };
+
+                if should_transfer {
+                    let track_amount = match asset.asset_type {
+                        AssetType::ERC721 => {
+                            // NFTs transfer whole — tracked as binary
+                            let erc721 = IERC721Dispatcher { contract_address: asset.asset };
+                            erc721.transfer_from(from, this_contract, asset.token_id);
+                            1_u256
+                        },
+                        AssetType::ERC1155 => {
+                            let amount = scale_by_percentage(asset.value, percentage);
+                            let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
+                            erc1155.safe_transfer_from(from, this_contract, asset.token_id, amount, array![].span());
+                            amount
+                        },
+                        _ => {
+                            // ERC20 and ERC4626
+                            let amount = scale_by_percentage(asset.value, percentage);
+                            let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                            erc20.transfer_from(from, this_contract, amount);
+                            amount
+                        },
+                    };
+
+                    // Credit per-inscription collateral balance
+                    let current = self.inscription_collateral_balance.read((inscription_id, i));
+                    self.inscription_collateral_balance.write((inscription_id, i), current + track_amount);
+                }
+
+                i += 1;
+            };
+        }
+
         /// Lock collateral from borrower to locker TBA.
-        /// FIX: is_first_fill flag prevents ERC721 double-transfer on multi-lender fills.
-        /// KNOWN LIMITATION: NFT collateral in multi-lender means all lenders share claim
-        /// on a single indivisible NFT. On liquidation, the first redeemer gets the whole NFT.
+        /// is_first_fill flag prevents ERC721 double-transfer on multi-lender fills.
         /// Optimized: accepts collateral_count to avoid redundant inscription storage read.
         fn _lock_collateral(
             ref self: ContractState,

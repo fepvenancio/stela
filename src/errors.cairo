@@ -30,4 +30,6 @@ pub mod Errors {
     pub const INVALID_NONCE: felt252 = 'STELA: invalid nonce';
     pub const ORDER_EXPIRED: felt252 = 'STELA: order expired';
     pub const INVALID_ORDER: felt252 = 'STELA: invalid order';
+    pub const NFT_MULTI_LENDER: felt252 = 'STELA: nft no multi lender';
+    pub const PAUSED: felt252 = 'STELA: paused';
 }

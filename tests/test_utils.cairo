@@ -70,10 +70,9 @@ pub fn MOCK_NFT() -> ContractAddress {
 pub fn deploy_stela() -> (ContractAddress, IStelaProtocolDispatcher) {
     let contract = declare("StelaProtocol").unwrap().contract_class();
 
-    // Constructor args: owner, treasury, inscriptions_nft, registry, implementation_hash
+    // Constructor args: owner, inscriptions_nft, registry, implementation_hash
     let mut constructor_calldata: Array<felt252> = array![];
     OWNER().serialize(ref constructor_calldata);
-    TREASURY().serialize(ref constructor_calldata);
     NFT_CONTRACT().serialize(ref constructor_calldata);
     REGISTRY().serialize(ref constructor_calldata);
     constructor_calldata.append(0x1234); // implementation_hash (stub)
@@ -172,7 +171,6 @@ pub fn deploy_full_setup() -> TestSetup {
     let stela_contract = declare("StelaProtocol").unwrap().contract_class();
     let mut stela_calldata: Array<felt252> = array![];
     OWNER().serialize(ref stela_calldata);
-    TREASURY().serialize(ref stela_calldata);
     nft_address.serialize(ref stela_calldata); // Real NFT address
     REGISTRY().serialize(ref stela_calldata); // Placeholder — will update via set_registry
     stela_calldata.append(locker_class_hash);

@@ -15,7 +15,7 @@ pub trait IStelaProtocol<TContractState> {
     /// Cancel an unfilled inscription. Only callable by the creator.
     fn cancel_inscription(ref self: TContractState, inscription_id: u256);
 
-    /// Repay an active inscription (principal + interest).
+    /// Repay an active inscription (principal + interest). Only callable by borrower.
     fn repay(ref self: TContractState, inscription_id: u256);
 
     /// Liquidate an expired, unrepaid inscription.
@@ -56,6 +56,12 @@ pub trait IStelaProtocol<TContractState> {
     /// Get the relayer fee in BPS.
     fn get_relayer_fee(self: @TContractState) -> u256;
 
+    /// Get the treasury address.
+    fn get_treasury(self: @TContractState) -> ContractAddress;
+
+    /// Check if the protocol is paused.
+    fn is_paused(self: @TContractState) -> bool;
+
     // --- Admin functions ---
 
     /// Set the protocol fee (in BPS). Only owner.
@@ -65,7 +71,6 @@ pub trait IStelaProtocol<TContractState> {
     fn set_treasury(ref self: TContractState, treasury: ContractAddress);
 
     /// Set the SNIP-14 registry address. Only owner.
-    /// Needed for deploy_full_setup (chicken-and-egg: Stela needs registry, registry needs Stela).
     fn set_registry(ref self: TContractState, registry: ContractAddress);
 
     /// Set the inscriptions NFT contract address. Only owner.
@@ -73,4 +78,13 @@ pub trait IStelaProtocol<TContractState> {
 
     /// Set the relayer fee (in BPS). Only owner.
     fn set_relayer_fee(ref self: TContractState, fee: u256);
+
+    /// Set the locker implementation class hash. Only owner.
+    fn set_implementation_hash(ref self: TContractState, implementation_hash: felt252);
+
+    /// Pause the protocol. Only owner.
+    fn pause(ref self: TContractState);
+
+    /// Unpause the protocol. Only owner.
+    fn unpause(ref self: TContractState);
 }

@@ -1,5 +1,6 @@
 // Locker Account — Token-Bound Account for Collateral
-// SNIP-14 compliant account that restricts asset transfers while allowing other interactions.
+// SNIP-14 compliant account that restricts ALL outgoing calls while locked.
+// Only the Stela contract can interact with a locked locker via pull_assets/unlock.
 
 #[starknet::contract(account)]
 pub mod LockerAccount {
@@ -15,50 +16,6 @@ pub mod LockerAccount {
     // Local imports
     use crate::errors::Errors;
     use crate::types::asset::{Asset, AssetType};
-
-    // ============================================================
-    //                    BLOCKED SELECTORS
-    // ============================================================
-
-    // These selectors are blocked to prevent unauthorized asset transfers.
-    // Computed using selector!("function_name") macro.
-    mod BlockedSelectors {
-        // ERC20 snake_case
-        pub const TRANSFER: felt252 = selector!("transfer");
-        pub const TRANSFER_FROM: felt252 = selector!("transfer_from");
-        pub const APPROVE: felt252 = selector!("approve");
-        pub const INCREASE_ALLOWANCE: felt252 = selector!("increase_allowance");
-        pub const DECREASE_ALLOWANCE: felt252 = selector!("decrease_allowance");
-
-        // ERC20 camelCase (OZ dual dispatch)
-        pub const TRANSFER_FROM_CAMEL: felt252 = selector!("transferFrom");
-        pub const INCREASE_ALLOWANCE_CAMEL: felt252 = selector!("increaseAllowance");
-        pub const DECREASE_ALLOWANCE_CAMEL: felt252 = selector!("decreaseAllowance");
-
-        // ERC721/ERC1155 snake_case
-        pub const SAFE_TRANSFER_FROM: felt252 = selector!("safe_transfer_from");
-        pub const SET_APPROVAL_FOR_ALL: felt252 = selector!("set_approval_for_all");
-
-        // ERC721/ERC1155 camelCase (OZ dual dispatch)
-        pub const SAFE_TRANSFER_FROM_CAMEL: felt252 = selector!("safeTransferFrom");
-        pub const SET_APPROVAL_FOR_ALL_CAMEL: felt252 = selector!("setApprovalForAll");
-
-        // ERC1155 batch transfer
-        pub const SAFE_BATCH_TRANSFER_FROM: felt252 = selector!("safe_batch_transfer_from");
-        pub const SAFE_BATCH_TRANSFER_FROM_CAMEL: felt252 = selector!("safeBatchTransferFrom");
-
-        // Burn functions (prevent token destruction)
-        pub const BURN: felt252 = selector!("burn");
-        pub const BURN_FROM: felt252 = selector!("burn_from");
-        pub const BURN_FROM_CAMEL: felt252 = selector!("burnFrom");
-
-        // ERC20 permit (gasless approval bypass)
-        pub const PERMIT: felt252 = selector!("permit");
-
-        // ERC4626 vault withdrawal functions
-        pub const WITHDRAW: felt252 = selector!("withdraw");
-        pub const REDEEM: felt252 = selector!("redeem");
-    }
 
     // ============================================================
     //                          STORAGE
@@ -114,9 +71,8 @@ pub mod LockerAccount {
     #[generate_trait]
     impl AccountImpl of AccountTrait {
         /// Validate a transaction.
-        /// For a TBA, we typically validate based on the NFT owner.
-        /// For simplicity, we return VALIDATED if the locker is unlocked,
-        /// or if the call doesn't target blocked selectors.
+        /// When locked: reject ALL outgoing calls (prevents any asset extraction).
+        /// When unlocked: allow all calls (collateral returned to borrower after repayment).
         #[external(v0)]
         fn __validate__(self: @ContractState, calls: Span<Call>) -> felt252 {
             // If unlocked, allow all calls
@@ -124,31 +80,22 @@ pub mod LockerAccount {
                 return starknet::VALIDATED;
             }
 
-            // Check each call for blocked selectors
-            let mut i: u32 = 0;
-            let len = calls.len();
-            while i < len {
-                let call = *calls.at(i);
-                assert(!_is_blocked_selector(call.selector), Errors::FORBIDDEN_SELECTOR);
-                i += 1;
-            }
-
+            // When locked, reject ALL outgoing calls.
+            // This is an allowlist approach: nothing is permitted while locked.
+            // The Stela contract interacts via pull_assets/unlock (external calls INTO
+            // the locker), which bypass __validate__ entirely.
+            assert(false, Errors::FORBIDDEN_SELECTOR);
             starknet::VALIDATED
         }
 
         /// Execute calls.
-        /// If locked, blocked selectors are rejected.
+        /// When locked, no calls should reach here (rejected by __validate__),
+        /// but we double-check as a safety measure.
         #[external(v0)]
         fn __execute__(ref self: ContractState, calls: Span<Call>) -> Array<Span<felt252>> {
-            // If locked, verify no blocked selectors
+            // If locked, reject all calls (defense in depth)
             if !self.unlocked.read() {
-                let mut i: u32 = 0;
-                let len = calls.len();
-                while i < len {
-                    let call = *calls.at(i);
-                    assert(!_is_blocked_selector(call.selector), Errors::FORBIDDEN_SELECTOR);
-                    i += 1;
-                };
+                assert(false, Errors::FORBIDDEN_SELECTOR);
             }
 
             // Execute all calls
@@ -156,8 +103,12 @@ pub mod LockerAccount {
         }
 
         /// Validate a declare transaction.
+        /// Reject declares when locked to prevent deploying arbitrary classes.
         #[external(v0)]
         fn __validate_declare__(self: @ContractState, class_hash: felt252) -> felt252 {
+            if !self.unlocked.read() {
+                assert(false, Errors::FORBIDDEN_SELECTOR);
+            }
             starknet::VALIDATED
         }
     }
@@ -208,35 +159,6 @@ pub mod LockerAccount {
     // ============================================================
     //                   INTERNAL FUNCTIONS
     // ============================================================
-
-    /// Check if a selector is blocked.
-    fn _is_blocked_selector(selector: felt252) -> bool {
-        // ERC20 snake_case + camelCase
-        selector == BlockedSelectors::TRANSFER
-            || selector == BlockedSelectors::TRANSFER_FROM
-            || selector == BlockedSelectors::TRANSFER_FROM_CAMEL
-            || selector == BlockedSelectors::APPROVE
-            || selector == BlockedSelectors::INCREASE_ALLOWANCE
-            || selector == BlockedSelectors::DECREASE_ALLOWANCE
-            || selector == BlockedSelectors::INCREASE_ALLOWANCE_CAMEL
-            || selector == BlockedSelectors::DECREASE_ALLOWANCE_CAMEL
-            // ERC721/ERC1155 snake_case + camelCase
-            || selector == BlockedSelectors::SAFE_TRANSFER_FROM
-            || selector == BlockedSelectors::SAFE_TRANSFER_FROM_CAMEL
-            || selector == BlockedSelectors::SET_APPROVAL_FOR_ALL
-            || selector == BlockedSelectors::SET_APPROVAL_FOR_ALL_CAMEL
-            // ERC1155 batch transfers
-            || selector == BlockedSelectors::SAFE_BATCH_TRANSFER_FROM
-            || selector == BlockedSelectors::SAFE_BATCH_TRANSFER_FROM_CAMEL
-            // Burn functions
-            || selector == BlockedSelectors::BURN
-            || selector == BlockedSelectors::BURN_FROM
-            || selector == BlockedSelectors::BURN_FROM_CAMEL
-            // Permit + ERC4626 vault
-            || selector == BlockedSelectors::PERMIT
-            || selector == BlockedSelectors::WITHDRAW
-            || selector == BlockedSelectors::REDEEM
-    }
 
     /// Execute a list of calls.
     fn _execute_calls(mut calls: Span<Call>) -> Array<Span<felt252>> {

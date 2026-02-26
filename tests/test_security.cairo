@@ -597,24 +597,22 @@ fn test_otc_swap_full_lifecycle() {
     stela.sign_inscription(inscription_id, MAX_BPS);
     stop_cheat_caller_address(stela_address);
 
-    // Borrower has debt tokens, collateral is locked
+    // Borrower has debt tokens, collateral is in the contract (not a locker)
     assert(setup.debt_token.balance_of(BORROWER()) == debt_amount, 'borrower got debt');
     assert(setup.collateral_token.balance_of(BORROWER()) == 0, 'collateral locked');
 
     let lender_shares = get_shares(stela_address, LENDER(), inscription_id);
     assert(lender_shares > 0, 'lender has shares');
 
-    // === 3. Liquidate immediately (timestamp > signed_at for OTC) ===
-    stop_cheat_block_timestamp_global();
-    start_cheat_block_timestamp_global(1001);
+    // === 3. Swap is auto-liquidated on sign — no explicit liquidation needed ===
+    let inscription_after = stela.get_inscription(inscription_id);
+    assert(inscription_after.liquidated, 'OTC auto-liquidated');
 
-    start_cheat_caller_address(stela_address, LENDER());
-    stela.liquidate(inscription_id);
-    stop_cheat_caller_address(stela_address);
+    // No locker should have been created for swaps
+    let locker = stela.get_locker(inscription_id);
+    assert(locker.is_zero(), 'no locker for swap');
 
-    assert(stela.get_inscription(inscription_id).liquidated, 'OTC liquidated');
-
-    // === 4. Redeem — lender gets collateral ===
+    // === 4. Redeem immediately — lender gets collateral ===
     start_cheat_caller_address(stela_address, LENDER());
     stela.redeem(inscription_id, lender_shares);
     stop_cheat_caller_address(stela_address);
@@ -664,7 +662,8 @@ fn test_treasury_receives_fee_shares() {
     stop_cheat_caller_address(stela_address);
 
     let lender_shares = get_shares(stela_address, LENDER(), inscription_id);
-    let treasury_shares = get_shares(stela_address, TREASURY(), inscription_id);
+    // Treasury defaults to OWNER() in the constructor
+    let treasury_shares = get_shares(stela_address, OWNER(), inscription_id);
 
     // Treasury must have received fee shares
     assert(treasury_shares > 0, 'treasury got fee shares');
