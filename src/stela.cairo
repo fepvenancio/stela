@@ -7,7 +7,11 @@ pub mod StelaProtocol {
     use core::num::traits::Zero;
     use core::poseidon::PoseidonTrait;
     use openzeppelin_access::ownable::OwnableComponent;
+    use openzeppelin_interfaces::accounts::{ISRC6Dispatcher, ISRC6DispatcherTrait};
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
+    use openzeppelin_utils::cryptography::nonces::NoncesComponent;
+    use openzeppelin_utils::cryptography::snip12::OffchainMessageHash;
+    use crate::snip12::{InscriptionOrder, LendOffer, hash_assets};
 
     // Token dispatchers from openzeppelin_interfaces
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
@@ -39,6 +43,7 @@ pub mod StelaProtocol {
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: SRC5Component, storage: src5, event: SRC5Event);
     component!(path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent);
+    component!(path: NoncesComponent, storage: nonces, event: NoncesEvent);
 
     // ERC1155 Mixin — exposes standard ERC1155 functions externally
     #[abi(embed_v0)]
@@ -52,6 +57,9 @@ pub mod StelaProtocol {
 
     // ReentrancyGuard
     impl ReentrancyGuardInternalImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
+
+    // Nonces
+    impl NoncesInternalImpl = NoncesComponent::InternalImpl<ContractState>;
 
     // ============================================================
     //                          STORAGE
@@ -68,6 +76,8 @@ pub mod StelaProtocol {
         src5: SRC5Component::Storage,
         #[substorage(v0)]
         reentrancy_guard: ReentrancyGuardComponent::Storage,
+        #[substorage(v0)]
+        nonces: NoncesComponent::Storage,
         // Protocol storage
         inscriptions: Map<u256, StoredInscription>,
         // Asset storage (flattened arrays indexed by inscription_id and index)
@@ -91,6 +101,8 @@ pub mod StelaProtocol {
         inscriptions_nft: ContractAddress,
         registry: ContractAddress,
         implementation_hash: felt252,
+        // Relayer fee (in BPS, separate from inscription_fee)
+        relayer_fee: u256,
     }
 
     // ============================================================
@@ -108,12 +120,15 @@ pub mod StelaProtocol {
         SRC5Event: SRC5Component::Event,
         #[flat]
         ReentrancyGuardEvent: ReentrancyGuardComponent::Event,
+        #[flat]
+        NoncesEvent: NoncesComponent::Event,
         InscriptionCreated: InscriptionCreated,
         InscriptionSigned: InscriptionSigned,
         InscriptionCancelled: InscriptionCancelled,
         InscriptionRepaid: InscriptionRepaid,
         InscriptionLiquidated: InscriptionLiquidated,
         SharesRedeemed: SharesRedeemed,
+        OrderSettled: OrderSettled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -165,6 +180,28 @@ pub mod StelaProtocol {
         #[key]
         pub redeemer: ContractAddress,
         pub shares: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct OrderSettled {
+        #[key]
+        pub inscription_id: u256,
+        #[key]
+        pub borrower: ContractAddress,
+        #[key]
+        pub lender: ContractAddress,
+        pub relayer: ContractAddress,
+        pub relayer_fee_amount: u256,
+    }
+
+    // SNIP-12 domain metadata (used by OffchainMessageHash)
+    impl StelaSNIP12Metadata of openzeppelin_utils::cryptography::snip12::SNIP12Metadata {
+        fn name() -> felt252 {
+            'Stela'
+        }
+        fn version() -> felt252 {
+            'v1'
+        }
     }
 
     // ============================================================
@@ -632,6 +669,195 @@ pub mod StelaProtocol {
             assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS);
             self.inscriptions_nft.write(inscriptions_nft);
         }
+
+        /// Settle an off-chain order with borrower + lender signatures.
+        fn settle(
+            ref self: ContractState,
+            order: InscriptionOrder,
+            debt_assets: Array<Asset>,
+            interest_assets: Array<Asset>,
+            collateral_assets: Array<Asset>,
+            borrower_sig: Array<felt252>,
+            offer: LendOffer,
+            lender_sig: Array<felt252>,
+        ) {
+            self.reentrancy_guard.start();
+
+            let caller = get_caller_address();
+            let timestamp = get_block_timestamp();
+
+            // 1. Check order.deadline hasn't passed
+            assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED);
+
+            // 2. Verify asset hashes match the order
+            assert(hash_assets(debt_assets.span()) == order.debt_hash, Errors::INVALID_ORDER);
+            assert(hash_assets(interest_assets.span()) == order.interest_hash, Errors::INVALID_ORDER);
+            assert(hash_assets(collateral_assets.span()) == order.collateral_hash, Errors::INVALID_ORDER);
+
+            // Verify asset counts match
+            assert(debt_assets.len() == order.debt_count, Errors::INVALID_ORDER);
+            assert(interest_assets.len() == order.interest_count, Errors::INVALID_ORDER);
+            assert(collateral_assets.len() == order.collateral_count, Errors::INVALID_ORDER);
+
+            // Validate asset array lengths don't exceed cap
+            assert(debt_assets.len() > 0, Errors::ZERO_DEBT_ASSETS);
+            assert(collateral_assets.len() > 0, Errors::ZERO_COLLATERAL);
+            assert(debt_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
+            assert(collateral_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
+            assert(interest_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
+
+            // Validate individual asset values
+            self._validate_assets(debt_assets.span());
+            self._validate_assets(collateral_assets.span());
+            self._validate_assets(interest_assets.span());
+
+            // ERC721 cannot be used as debt or interest
+            self._validate_no_nfts(debt_assets.span());
+            self._validate_no_nfts(interest_assets.span());
+
+            // Verify offer references this order
+            let order_msg_hash = order.get_message_hash(order.borrower);
+            assert(offer.order_hash == order_msg_hash, Errors::INVALID_ORDER);
+
+            // 3. Verify borrower signature via ISRC6
+            let borrower_account = ISRC6Dispatcher { contract_address: order.borrower };
+            let borrower_valid = borrower_account.is_valid_signature(order_msg_hash, borrower_sig);
+            assert(borrower_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+
+            // 4. Verify lender signature via ISRC6
+            let lender_msg_hash = offer.get_message_hash(offer.lender);
+            let lender_account = ISRC6Dispatcher { contract_address: offer.lender };
+            let lender_valid = lender_account.is_valid_signature(lender_msg_hash, lender_sig);
+            assert(lender_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+
+            // 5. Consume both nonces
+            self.nonces.use_checked_nonce(order.borrower, order.nonce);
+            self.nonces.use_checked_nonce(offer.lender, offer.nonce);
+
+            // 6. Create inscription (reuse existing internal logic)
+            let borrower = order.borrower;
+            let lender = offer.lender;
+
+            // Compute inscription ID
+            let inscription_id = self
+                ._compute_inscription_id(
+                    borrower, lender, order.duration, order.deadline, timestamp, debt_assets.span(),
+                );
+
+            // Determine actual debt percentage
+            let actual_percentage = if order.multi_lender {
+                assert(offer.issued_debt_percentage > 0, Errors::ZERO_SHARES);
+                assert(offer.issued_debt_percentage <= MAX_BPS, Errors::EXCEEDS_MAX_BPS);
+                offer.issued_debt_percentage
+            } else {
+                MAX_BPS
+            };
+
+            // Store inscription
+            let stored = StoredInscription {
+                borrower,
+                lender,
+                duration: order.duration,
+                deadline: order.deadline,
+                signed_at: timestamp,
+                issued_debt_percentage: actual_percentage,
+                is_repaid: false,
+                liquidated: false,
+                multi_lender: order.multi_lender,
+                debt_asset_count: debt_assets.len(),
+                interest_asset_count: interest_assets.len(),
+                collateral_asset_count: collateral_assets.len(),
+            };
+            self.inscriptions.write(inscription_id, stored);
+
+            // Store assets
+            self._store_debt_assets(inscription_id, debt_assets.span());
+            self._store_interest_assets(inscription_id, interest_assets.span());
+            self._store_collateral_assets(inscription_id, collateral_assets.span());
+
+            // Mint inscription NFT to borrower
+            let nft_contract = self.inscriptions_nft.read();
+            let nft = IERC721MintableDispatcher { contract_address: nft_contract };
+            nft.mint(borrower, inscription_id);
+
+            // Create TBA via registry
+            let registry_contract = self.registry.read();
+            let registry = IRegistryDispatcher { contract_address: registry_contract };
+            let locker_addr = registry
+                .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
+            assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
+            self.lockers.write(inscription_id, locker_addr);
+            self.is_locker.write(locker_addr, true);
+
+            // Calculate shares
+            let shares = convert_to_shares(actual_percentage, 0, 0);
+
+            // Calculate and mint fee shares
+            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
+            let total_new_shares = shares + fee_shares;
+
+            // Mint lender shares
+            self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
+
+            // Mint fee shares to treasury
+            if fee_shares > 0 {
+                let treasury = self.treasury.read();
+                self
+                    .erc1155
+                    .update(Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span());
+            }
+
+            // Update total supply
+            self.total_supply.write(inscription_id, total_new_shares);
+
+            // Lock collateral from borrower to locker
+            self
+                ._lock_collateral(
+                    borrower, locker_addr, inscription_id, collateral_assets.len(), actual_percentage, true,
+                );
+
+            // Issue debt from lender to borrower, deducting relayer fee from lender's transfer
+            let relayer_fee_bps = self.relayer_fee.read();
+            let total_relayer_fee = self
+                ._issue_debt_with_fee(
+                    lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, relayer_fee_bps,
+                );
+
+            // Emit events
+            self.emit(InscriptionCreated { inscription_id, creator: caller, is_borrow: true });
+            self
+                .emit(
+                    InscriptionSigned {
+                        inscription_id,
+                        borrower,
+                        lender,
+                        issued_debt_percentage: actual_percentage,
+                        shares_minted: shares,
+                    },
+                );
+            self
+                .emit(
+                    OrderSettled {
+                        inscription_id, borrower, lender, relayer: caller, relayer_fee_amount: total_relayer_fee,
+                    },
+                );
+
+            self.reentrancy_guard.end();
+        }
+
+        fn nonces(self: @ContractState, owner: ContractAddress) -> felt252 {
+            self.nonces.Nonces_nonces.read(owner)
+        }
+
+        fn get_relayer_fee(self: @ContractState) -> u256 {
+            self.relayer_fee.read()
+        }
+
+        fn set_relayer_fee(ref self: ContractState, fee: u256) {
+            self.ownable.assert_only_owner();
+            assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
+            self.relayer_fee.write(fee);
+        }
     }
 
     // ============================================================
@@ -785,6 +1011,51 @@ pub mod StelaProtocol {
                 self._process_payment(asset, from, to, percentage);
                 i += 1;
             };
+        }
+
+        /// Issue debt from lender to borrower with relayer fee deduction.
+        /// Instead of transferring full debt to borrower and then pulling fee from borrower
+        /// (which would revert — borrower never approved the contract), this deducts the
+        /// relayer fee from the lender's transfer and sends it directly to the relayer.
+        /// Returns the total fee amount across all debt assets.
+        fn _issue_debt_with_fee(
+            ref self: ContractState,
+            from: ContractAddress,
+            to: ContractAddress,
+            relayer: ContractAddress,
+            inscription_id: u256,
+            debt_count: u32,
+            percentage: u256,
+            relayer_fee_bps: u256,
+        ) -> u256 {
+            let mut total_fee: u256 = 0;
+            let mut i: u32 = 0;
+            while i < debt_count {
+                let asset = self.inscription_debt_assets.read((inscription_id, i));
+                let total_amount = scale_by_percentage(asset.value, percentage);
+                let fee_amount = if relayer_fee_bps > 0 {
+                    (total_amount * relayer_fee_bps) / MAX_BPS
+                } else {
+                    0
+                };
+                let net_amount = total_amount - fee_amount;
+
+                let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+
+                // Transfer net amount: lender -> borrower
+                if net_amount > 0 {
+                    erc20.transfer_from(from, to, net_amount);
+                }
+
+                // Transfer fee: lender -> relayer
+                if fee_amount > 0 {
+                    erc20.transfer_from(from, relayer, fee_amount);
+                    total_fee = total_fee + fee_amount;
+                }
+
+                i += 1;
+            };
+            total_fee
         }
 
         /// Pull repayment (debt + interest) from caller to this contract.

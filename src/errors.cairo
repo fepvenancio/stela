@@ -26,4 +26,8 @@ pub mod Errors {
     pub const ZERO_IMPL_HASH: felt252 = 'STELA: zero impl hash';
     pub const NFT_NOT_FUNGIBLE: felt252 = 'STELA: nft not fungible';
     pub const TOO_MANY_ASSETS: felt252 = 'STELA: too many assets';
+    pub const INVALID_SIGNATURE: felt252 = 'STELA: invalid signature';
+    pub const INVALID_NONCE: felt252 = 'STELA: invalid nonce';
+    pub const ORDER_EXPIRED: felt252 = 'STELA: order expired';
+    pub const INVALID_ORDER: felt252 = 'STELA: invalid order';
 }

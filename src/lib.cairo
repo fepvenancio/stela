@@ -5,6 +5,7 @@ pub mod errors;
 pub mod interfaces;
 pub mod locker_account;
 pub mod mocks;
+pub mod snip12;
 pub mod stela;
 pub mod types;
 pub mod utils;

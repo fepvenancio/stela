@@ -102,5 +102,6 @@ dependencies = [
  "openzeppelin_security",
  "openzeppelin_testing",
  "openzeppelin_token",
+ "openzeppelin_utils",
  "snforge_std",
 ]

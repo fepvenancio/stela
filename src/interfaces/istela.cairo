@@ -1,6 +1,7 @@
 // IStelaProtocol — Main protocol interface
 
 use starknet::ContractAddress;
+use crate::types::asset::Asset;
 use crate::types::inscription::{InscriptionParams, StoredInscription};
 
 #[starknet::interface]
@@ -23,6 +24,18 @@ pub trait IStelaProtocol<TContractState> {
     /// Redeem ERC-1155 shares for underlying assets after repayment or liquidation.
     fn redeem(ref self: TContractState, inscription_id: u256, shares: u256);
 
+    /// Settle an off-chain order with borrower + lender signatures.
+    fn settle(
+        ref self: TContractState,
+        order: crate::snip12::InscriptionOrder,
+        debt_assets: Array<Asset>,
+        interest_assets: Array<Asset>,
+        collateral_assets: Array<Asset>,
+        borrower_sig: Array<felt252>,
+        offer: crate::snip12::LendOffer,
+        lender_sig: Array<felt252>,
+    );
+
     // --- View functions ---
 
     /// Get inscription details by ID.
@@ -36,6 +49,12 @@ pub trait IStelaProtocol<TContractState> {
 
     /// Get the protocol fee in BPS.
     fn get_inscription_fee(self: @TContractState) -> u256;
+
+    /// Get the nonce for an address (for off-chain signing).
+    fn nonces(self: @TContractState, owner: ContractAddress) -> felt252;
+
+    /// Get the relayer fee in BPS.
+    fn get_relayer_fee(self: @TContractState) -> u256;
 
     // --- Admin functions ---
 
@@ -51,4 +70,7 @@ pub trait IStelaProtocol<TContractState> {
 
     /// Set the inscriptions NFT contract address. Only owner.
     fn set_inscriptions_nft(ref self: TContractState, inscriptions_nft: ContractAddress);
+
+    /// Set the relayer fee (in BPS). Only owner.
+    fn set_relayer_fee(ref self: TContractState, fee: u256);
 }
