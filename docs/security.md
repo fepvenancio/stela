@@ -55,6 +55,7 @@ The `StelaProtocol` integrates OpenZeppelin's `PausableComponent`. The following
 - `liquidate`
 - `redeem`
 - `settle`
+- `fill_signed_order`
 
 ### Pause/Unpause
 
@@ -95,6 +96,7 @@ The `StelaProtocol` integrates OpenZeppelin's `ReentrancyGuardComponent`. The fo
 | `liquidate` | Locker pull_assets (triggers ERC-20/721/1155 transfers) |
 | `redeem` | ERC-1155 burn, ERC-20/721/1155 transfers (asset distribution) |
 | `settle` | All of the above (create + sign in one transaction) |
+| `fill_signed_order` | ISRC6 signature verification (first fill only), then all `_fill_inscription` calls (NFT mint, registry create_account, ERC-20/721/1155 transfers) |
 
 Each function calls `self.reentrancy_guard.start()` at the beginning and `self.reentrancy_guard.end()` at the end. If a malicious token contract attempts to re-enter any of these functions, the guard reverts.
 
@@ -138,6 +140,18 @@ All enforced via `self.ownable.assert_only_owner()`.
 |---|---|
 | `cancel_inscription(inscription_id)` | `assert(caller == creator, Errors::NOT_CREATOR)` where creator is the non-zero address between borrower and lender |
 
+### Maker-Only Functions (Signed Order)
+
+| Function | Check |
+|---|---|
+| `cancel_order(order)` | `assert(caller == order.maker, Errors::UNAUTHORIZED)` |
+
+### Caller-Based Functions (Signed Order)
+
+| Function | Check |
+|---|---|
+| `cancel_orders_by_nonce(min_nonce)` | Operates on `maker_min_nonce[caller]`; any address can set its own min nonce. `min_nonce` must be strictly greater than the current value. |
+
 ### Permissionless Functions
 
 | Function | Who Can Call | Condition |
@@ -147,6 +161,7 @@ All enforced via `self.ownable.assert_only_owner()`.
 | `liquidate` | Anyone | Protocol not paused, `signed_at + duration` has passed, not repaid, not already liquidated |
 | `redeem` | Any share holder | Protocol not paused, inscription is repaid or liquidated, caller has shares |
 | `settle` | Anyone (relayer) | Protocol not paused, valid signatures from both parties |
+| `fill_signed_order` | Anyone (taker) | Protocol not paused, caller != maker (self-trade prevention), caller == `allowed_taker` if nonzero, order not expired, order not cancelled, `fill_bps >= min_fill_bps`, no overfill, valid SNIP-12 signature on first fill |
 
 ---
 
@@ -269,6 +284,7 @@ This is used instead of percentage-based scaling because the tracked balances al
 - `create_inscription`: `assert(params.deadline > timestamp, Errors::INSCRIPTION_EXPIRED)` -- Deadline must be in the future.
 - `sign_inscription`: `assert(timestamp <= inscription.deadline, Errors::INSCRIPTION_EXPIRED)` -- Cannot sign after deadline.
 - `settle`: `assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED)` -- Cannot settle after deadline.
+- `fill_signed_order`: `assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED)` -- Cannot fill after the signed order's deadline. Additionally, `_fill_inscription` checks `assert(timestamp <= inscription.deadline)` on the underlying inscription.
 
 ### Repayment Window
 
@@ -293,6 +309,10 @@ This is used instead of percentage-based scaling because the tracked balances al
 | `assert(inscription.issued_debt_percentage == 0, Errors::ALREADY_SIGNED)` | In `sign_inscription` (single-lender) | Prevents double-signing a single-lender inscription |
 | `assert(inscription.issued_debt_percentage == 0, Errors::NOT_CANCELLABLE)` | In `cancel_inscription` | Prevents cancelling a partially or fully signed inscription |
 | `assert(existing.borrower.is_zero()` or `existing.lender.is_zero(), Errors::INSCRIPTION_EXISTS)` | In `create_inscription` (checks borrower if `is_borrow`, lender otherwise) and `settle` (checks both are zero) | Prevents duplicate inscription IDs |
+| `assert(current_filled + fill_bps <= order.bps, Errors::OVERFILL)` | In `fill_signed_order` | Prevents filling beyond the order's total offered BPS |
+| `assert(!self.cancelled_orders.read(order_hash), Errors::ORDER_CANCELLED)` | In `fill_signed_order` | Prevents filling a cancelled order |
+| `assert(nonce_u256 >= min_nonce_u256, Errors::INVALID_NONCE)` | In `fill_signed_order` | Rejects orders with nonce below the maker's minimum (set by `cancel_orders_by_nonce`) |
+| `assert(min_nonce_u256 > current_min_u256, Errors::INVALID_NONCE)` | In `cancel_orders_by_nonce` | Prevents no-op or decreasing nonce updates; `min_nonce` must strictly increase |
 
 ---
 
@@ -345,6 +365,20 @@ Asset arrays are not included in the signed messages directly. Instead, Poseidon
 - `interest_assets.len() == order.interest_count`
 - `collateral_assets.len() == order.collateral_count`
 
+### Signed Order Signature Security (fill_signed_order)
+
+**Lazy registration model:** The maker's SNIP-12 signature is verified only on the first fill. Once verified, the order is registered on-chain (`signed_orders[order_hash] = true`). Subsequent fills of the same order skip signature verification -- the on-chain registration serves as proof that the order was authorized.
+
+**Self-trade prevention:** `assert(caller != order.maker)` prevents the maker from filling their own order, which would bypass economic incentives.
+
+**Private taker restriction:** If `order.allowed_taker` is nonzero, `assert(caller == order.allowed_taker)` restricts fills to a single pre-approved counterparty, enabling private OTC fills.
+
+**Nonce-based bulk cancellation:** `cancel_orders_by_nonce(min_nonce)` sets `maker_min_nonce[caller]` to a higher value. All orders with `nonce < min_nonce` are rejected in `fill_signed_order` (step 5), enabling a maker to invalidate all outstanding orders in a single transaction.
+
+**Individual cancellation:** `cancel_order(order)` sets `cancelled_orders[order_hash] = true`. The `fill_signed_order` function checks this flag (step 6) before proceeding.
+
+**Minimum fill enforcement:** If `order.min_fill_bps > 0`, each fill must meet or exceed this threshold, preventing dust fills.
+
 ---
 
 ## 12. Known Limitations
@@ -392,9 +426,15 @@ For multi-lender inscriptions that are not fully filled (e.g., only 60% of debt 
 | `ZERO_IMPL_HASH` | `'STELA: zero impl hash'` | Zero implementation hash |
 | `NFT_NOT_FUNGIBLE` | `'STELA: nft not fungible'` | ERC721/ERC1155 in debt/interest or multi-lender collateral |
 | `TOO_MANY_ASSETS` | `'STELA: too many assets'` | Asset array exceeds MAX_ASSETS (10) |
-| `INVALID_SIGNATURE` | `'STELA: invalid signature'` | Failed ISRC6 signature verification in settle |
-| `INVALID_NONCE` | `'STELA: invalid nonce'` | (Handled by NoncesComponent) |
-| `ORDER_EXPIRED` | `'STELA: order expired'` | Settling after order deadline |
+| `INVALID_SIGNATURE` | `'STELA: invalid signature'` | Failed ISRC6 signature verification in settle or fill_signed_order |
+| `INVALID_NONCE` | `'STELA: invalid nonce'` | NoncesComponent (settle), or signed order nonce below maker's min_nonce (fill_signed_order), or non-increasing min_nonce (cancel_orders_by_nonce) |
+| `ORDER_EXPIRED` | `'STELA: order expired'` | Settling after order deadline, or filling a signed order after its deadline |
 | `INVALID_ORDER` | `'STELA: invalid order'` | Asset hash/count mismatch or offer not bound to order |
 | `NFT_MULTI_LENDER` | `'STELA: nft no multi lender'` | (Reserved -- validation uses NFT_NOT_FUNGIBLE) |
 | `PAUSED` | `'STELA: paused'` | (Handled by PausableComponent) |
+| `ORDER_CANCELLED` | `'STELA: order cancelled'` | Filling a signed order that has been individually cancelled |
+| `UNAUTHORIZED_TAKER` | `'STELA: unauthorized taker'` | Caller is not the `allowed_taker` specified in a private signed order |
+| `OVERFILL` | `'STELA: overfill'` | `current_filled + fill_bps` exceeds the signed order's total `bps` |
+| `SELF_TRADE_NOT_ALLOWED` | `'STELA: self trade'` | Maker attempting to fill their own signed order |
+| `ORDER_NOT_REGISTERED` | `'STELA: order not registered'` | (Defensive: asserted in else branch after registration check) |
+| `MIN_FILL_NOT_MET` | `'STELA: min fill not met'` | `fill_bps` is below the signed order's `min_fill_bps` threshold |

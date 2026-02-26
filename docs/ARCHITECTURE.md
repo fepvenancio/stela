@@ -15,7 +15,7 @@ The core contract. Manages the full inscription lifecycle: creation, signing, re
 | `ERC1155Component` | Lender share tokens. Each inscription ID is a token ID. |
 | `OwnableComponent` | Admin access control for configuration functions. |
 | `PausableComponent` | Emergency pause for all mutating operations. |
-| `ReentrancyGuardComponent` | Protects `sign_inscription`, `repay`, `liquidate`, `redeem`, and `settle`. |
+| `ReentrancyGuardComponent` | Protects `sign_inscription`, `repay`, `liquidate`, `redeem`, `settle`, and `fill_signed_order`. |
 | `SRC5Component` | Interface introspection (required by ERC-1155). |
 | `NoncesComponent` | Per-address nonces for SNIP-12 off-chain signatures. |
 
@@ -37,6 +37,10 @@ The core contract. Manages the full inscription lifecycle: creation, signing, re
 - `inscriptions_nft: ContractAddress` -- ERC-721 contract for inscription NFTs.
 - `registry: ContractAddress` -- SNIP-14 TBA registry contract.
 - `implementation_hash: felt252` -- Class hash of LockerAccount for TBA deployment.
+- `signed_orders: Map<felt252, bool>` -- Whether a signed order hash has been registered on-chain.
+- `cancelled_orders: Map<felt252, bool>` -- Whether a signed order hash has been individually cancelled.
+- `filled_amounts: Map<felt252, u256>` -- Cumulative filled BPS per signed order hash.
+- `maker_min_nonce: Map<ContractAddress, felt252>` -- Minimum valid nonce per maker for bulk order invalidation.
 
 ### LockerAccount (`src/locker_account.cairo`)
 
@@ -105,6 +109,23 @@ StoredInscription:
   interest_asset_count: u32
   collateral_asset_count: u32
 ```
+
+### SignedOrder (`src/types/signed_order.cairo`)
+
+Off-chain signed order for the matching engine:
+
+```
+SignedOrder:
+  maker: ContractAddress          -- Order creator (borrower or lender)
+  allowed_taker: ContractAddress  -- Zero = open to anyone; nonzero = private OTC fill
+  inscription_id: u256            -- The inscription being offered for filling
+  bps: u256                       -- Total fill percentage offered (max 10,000)
+  deadline: u64                   -- Unix timestamp for order expiration
+  nonce: felt252                  -- Maker nonce for bulk invalidation
+  min_fill_bps: u256              -- Minimum acceptable partial fill (0 = any amount)
+```
+
+Hashed via SNIP-12 `StructHash` with Poseidon. The `u256` fields use nested struct hashes per SNIP-12: `Poseidon(U256_TYPE_HASH, low, high)`. The type hash is derived from the canonical encode_type string including the `u256` sub-type definition.
 
 ---
 
@@ -295,6 +316,123 @@ The `settle` function performs the entire create + sign flow in a single transac
 
 ---
 
+## Signed-Order Matching Engine
+
+The matching engine extends the protocol with a single-signature fill model. A maker signs an order off-chain; any eligible taker can fill it on-chain without the maker submitting a transaction. This enables order-book style UX where makers post signed orders and takers execute them.
+
+### SignedOrder Struct (`src/types/signed_order.cairo`)
+
+```
+SignedOrder:
+  maker: ContractAddress          -- Order creator (borrower or lender)
+  allowed_taker: ContractAddress  -- Zero = open to anyone; nonzero = private OTC
+  inscription_id: u256            -- The inscription being offered for filling
+  bps: u256                       -- Total fill percentage offered (in MAX_BPS units, max 10,000)
+  deadline: u64                   -- Unix timestamp for order expiration
+  nonce: felt252                  -- Maker nonce; bump via cancel_orders_by_nonce to batch-invalidate
+  min_fill_bps: u256              -- Minimum acceptable partial fill (0 = any amount accepted)
+```
+
+The struct is hashed via SNIP-12 `StructHash` using Poseidon. The `u256` fields (`inscription_id`, `bps`, `min_fill_bps`) are encoded as nested struct hashes per the SNIP-12 specification (`Poseidon(U256_TYPE_HASH, low, high)`). The type hash is computed with `selector!()` over the canonical SNIP-12 encode_type string. **The struct layout must never change after any signature is issued** -- any field addition or reordering invalidates all outstanding signed orders.
+
+### fill_signed_order Lifecycle
+
+`fill_signed_order(order, signature, fill_bps)` is the primary entry point. It performs 13 sequential steps:
+
+1. **Self-trade prevention:** `assert(caller != order.maker)` -- a maker cannot fill their own order.
+2. **Private taker check:** If `order.allowed_taker` is nonzero, only that address can fill.
+3. **Deadline check:** `assert(timestamp <= order.deadline)` -- order must not be expired.
+4. **Hash computation:** The order hash is computed via `order.hash_struct()` for all storage lookups.
+5. **Nonce check (bulk invalidation):** `order.nonce` must be >= the maker's `maker_min_nonce`. Both are cast to `u256` for comparison since `felt252` does not implement `PartialOrd`.
+6. **Cancelled check:** The order must not be individually cancelled.
+7. **Min fill check:** If `order.min_fill_bps > 0`, the `fill_bps` must meet or exceed it.
+8. **Overfill check:** `current_filled + fill_bps` must not exceed `order.bps`.
+9. **First fill -- signature verification:** On the first fill (order not yet registered), the maker's SNIP-12 signature is verified via `ISRC6.is_valid_signature` on the maker's account contract. The order is then registered on-chain (`signed_orders[order_hash] = true`).
+10. **Subsequent fills -- registration check:** If the order is already registered, no signature verification is needed. The taker just submits the order struct and fill amount.
+11. **Shared fill logic:** Calls `_fill_inscription(order.inscription_id, fill_bps, caller)` -- the same internal function used by `sign_inscription`.
+12. **Update filled amounts:** `filled_amounts[order_hash] += fill_bps`.
+13. **Emit `OrderFilled` event.**
+
+### _fill_inscription (Shared Internal Function)
+
+`_fill_inscription(inscription_id, issued_debt_percentage, filler)` is the shared internal function that handles the actual inscription fill. Both `sign_inscription` and `fill_signed_order` delegate to it.
+
+**Parameters:**
+- `inscription_id` -- The inscription to fill.
+- `issued_debt_percentage` -- BPS amount to fill (ignored for single-lender; always 100%).
+- `filler` -- The address performing the fill (caller for `sign_inscription`, caller/taker for `fill_signed_order`).
+
+**Behavior:**
+1. Loads the inscription and validates it exists and is not expired.
+2. Determines the actual fill percentage (100% for single-lender, user-specified for multi-lender).
+3. Determines borrower/lender roles based on which side the inscription creator occupies.
+4. On first fill: sets `signed_at`, assigns borrower/lender, mints inscription NFT, creates TBA locker (unless OTC swap).
+5. On every fill: calculates and mints ERC-1155 shares + fee shares, locks collateral, issues debt from lender to borrower.
+
+This refactoring ensures that `sign_inscription` and `fill_signed_order` produce identical on-chain effects for the inscription itself.
+
+### cancel_order
+
+`cancel_order(order)` marks a specific order as cancelled. Only the maker can call it (`assert(caller == order.maker)`). Emits `OrderCancelled`.
+
+### cancel_orders_by_nonce
+
+`cancel_orders_by_nonce(min_nonce)` sets the caller's `maker_min_nonce` to the provided value, invalidating all outstanding orders with a lower nonce in a single transaction. The new value must be strictly greater than the current minimum (compared as `u256`). Emits `OrdersBulkCancelled`.
+
+### Storage (Matching Engine)
+
+Four new storage fields support the matching engine:
+
+- `signed_orders: Map<felt252, bool>` -- Whether an order hash has been registered on-chain (first fill completed).
+- `cancelled_orders: Map<felt252, bool>` -- Whether an order hash has been individually cancelled.
+- `filled_amounts: Map<felt252, u256>` -- Cumulative filled BPS per order hash.
+- `maker_min_nonce: Map<ContractAddress, felt252>` -- Minimum valid nonce per maker address. Orders with `nonce < min_nonce` are rejected.
+
+### View Functions (Matching Engine)
+
+| Function | Returns | Description |
+|---|---|---|
+| `is_order_registered(order_hash)` | `bool` | Whether the order has been registered on-chain (first fill completed). |
+| `is_order_cancelled(order_hash)` | `bool` | Whether the order has been individually cancelled. |
+| `get_filled_bps(order_hash)` | `u256` | Current cumulative filled BPS for the order. |
+| `get_maker_min_nonce(maker)` | `felt252` | Minimum valid nonce for the maker. |
+
+### Signed-Order Fill Flow
+
+```
+Maker                     Off-chain                  StelaProtocol                  Taker
+  |                          |                             |                            |
+  |-- sign SignedOrder ----->|                             |                            |
+  |   (SNIP-12 off-chain)   |                             |                            |
+  |                          |-- publish order + sig ----->|                            |
+  |                          |   (e.g. orderbook API)      |                            |
+  |                          |                             |                            |
+  |                          |                             |<-- fill_signed_order -------|
+  |                          |                             |    (order, sig, fill_bps)   |
+  |                          |                             |                            |
+  |                          |                             |--- [first fill only]        |
+  |                          |                             |    verify ISRC6 signature   |
+  |                          |                             |    register order on-chain  |
+  |                          |                             |                            |
+  |                          |                             |--- _fill_inscription        |
+  |                          |                             |    (same as sign flow:      |
+  |                          |                             |     mint NFT, create TBA,   |
+  |                          |                             |     lock collateral,         |
+  |                          |                             |     mint shares,             |
+  |                          |                             |     issue debt)              |
+  |                          |                             |                            |
+  |                          |                             |--- update filled_amounts    |
+  |                          |                             |--- emit OrderFilled         |
+  |                          |                             |                            |
+  |                          |                             |<-- fill_signed_order -------|
+  |                          |                             |    (same order, NO sig,     |
+  |                          |                             |     new fill_bps)           |
+  |                          |                             |    [subsequent fill:         |
+  |                          |                             |     skip sig verification]   |
+```
+
+---
+
 ## Collateral Locking Mechanism
 
 Collateral is locked in a token-bound account (TBA) created via the SNIP-14 registry. The flow:
@@ -433,12 +571,15 @@ Asset type encoding: `ERC20=0, ERC721=1, ERC1155=2, ERC4626=3`.
 | Event | Emitted By | Key Fields |
 |---|---|---|
 | `InscriptionCreated` | `create_inscription`, `settle` | `inscription_id` (key), `creator` (key), `is_borrow` |
-| `InscriptionSigned` | `sign_inscription`, `settle` | `inscription_id` (key), `borrower` (key), `lender` (key), `issued_debt_percentage`, `shares_minted` |
+| `InscriptionSigned` | `sign_inscription`, `settle`, `fill_signed_order` | `inscription_id` (key), `borrower` (key), `lender` (key), `issued_debt_percentage`, `shares_minted` |
 | `InscriptionCancelled` | `cancel_inscription` | `inscription_id` (key), `creator` |
 | `InscriptionRepaid` | `repay` | `inscription_id` (key), `repayer` |
 | `InscriptionLiquidated` | `liquidate` | `inscription_id` (key), `liquidator` |
 | `SharesRedeemed` | `redeem` | `inscription_id` (key), `redeemer` (key), `shares` |
 | `OrderSettled` | `settle` | `inscription_id` (key), `borrower` (key), `lender` (key), `relayer`, `relayer_fee_amount` |
+| `OrderFilled` | `fill_signed_order` | `inscription_id` (key), `order_hash` (key), `taker` (key), `fill_bps`, `total_filled_bps` |
+| `OrderCancelled` | `cancel_order` | `order_hash` (key), `maker` |
+| `OrdersBulkCancelled` | `cancel_orders_by_nonce` | `maker` (key), `new_min_nonce` |
 
 Locker events (emitted by LockerAccount):
 
