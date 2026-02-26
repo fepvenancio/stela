@@ -55,7 +55,7 @@ tests/
 - **StarkNet**: 2.13.1
 - **Build system**: Scarb
 - **Test framework**: snforge (starknet-foundry) 0.56.0
-- **OpenZeppelin**: v3.0.0 (token, access, security), v2.1.0 (interfaces, utils)
+- **OpenZeppelin**: v3.0.0 (token, access, security, introspection, account), v2.1.0 (interfaces, utils)
 
 ## Quick Start
 

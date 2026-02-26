@@ -292,7 +292,7 @@ This is used instead of percentage-based scaling because the tracked balances al
 | `assert(inscription.signed_at > 0, Errors::INVALID_INSCRIPTION)` | In `repay` and `liquidate` | Prevents acting on unsigned inscriptions |
 | `assert(inscription.issued_debt_percentage == 0, Errors::ALREADY_SIGNED)` | In `sign_inscription` (single-lender) | Prevents double-signing a single-lender inscription |
 | `assert(inscription.issued_debt_percentage == 0, Errors::NOT_CANCELLABLE)` | In `cancel_inscription` | Prevents cancelling a partially or fully signed inscription |
-| `assert(existing.borrower.is_zero(), Errors::INSCRIPTION_EXISTS)` | In `create_inscription` and `settle` | Prevents duplicate inscription IDs |
+| `assert(existing.borrower.is_zero()` or `existing.lender.is_zero(), Errors::INSCRIPTION_EXISTS)` | In `create_inscription` (checks borrower if `is_borrow`, lender otherwise) and `settle` (checks both are zero) | Prevents duplicate inscription IDs |
 
 ---
 
