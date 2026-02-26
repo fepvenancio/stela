@@ -9,3 +9,4 @@ mod test_repay;
 mod test_security;
 mod test_sign_inscription;
 mod test_utils;
+mod test_hash_compat;

@@ -45,16 +45,31 @@ pub struct LendOffer {
     pub nonce: felt252,
 }
 
+// SNIP-12 type hash includes dependent type definitions (u256 sub-type).
 const LEND_OFFER_TYPE_HASH: felt252 = selector!(
-    "\"LendOffer\"(\"order_hash\":\"felt\",\"lender\":\"ContractAddress\",\"issued_debt_percentage\":\"u256\",\"nonce\":\"felt\")",
+    "\"LendOffer\"(\"order_hash\":\"felt\",\"lender\":\"ContractAddress\",\"issued_debt_percentage\":\"u256\",\"nonce\":\"felt\")\"u256\"(\"low\":\"u128\",\"high\":\"u128\")",
+);
+
+const U256_TYPE_HASH: felt252 = selector!(
+    "\"u256\"(\"low\":\"u128\",\"high\":\"u128\")",
 );
 
 impl LendOfferStructHash of StructHash<LendOffer> {
     fn hash_struct(self: @LendOffer) -> felt252 {
-        let hash_state = PoseidonTrait::new();
-        hash_state
+        // u256 must be encoded as a nested struct hash per SNIP-12:
+        //   u256_hash = Poseidon(U256_TYPE_HASH, low, high)
+        let u256_hash = PoseidonTrait::new()
+            .update_with(U256_TYPE_HASH)
+            .update_with((*self.issued_debt_percentage).low)
+            .update_with((*self.issued_debt_percentage).high)
+            .finalize();
+
+        PoseidonTrait::new()
             .update_with(LEND_OFFER_TYPE_HASH)
-            .update_with(*self)
+            .update_with(*self.order_hash)
+            .update_with(*self.lender)
+            .update_with(u256_hash)
+            .update_with(*self.nonce)
             .finalize()
     }
 }
