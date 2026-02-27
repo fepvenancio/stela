@@ -315,8 +315,9 @@ pub mod StelaProtocol {
             self._validate_no_nfts(params.debt_assets.span());
             self._validate_no_nfts(params.interest_assets.span());
 
-            // ERC721 collateral cannot be used with multi-lender inscriptions
-            // because NFTs are indivisible and can't be split pro-rata among lenders
+            // H2: ERC721 collateral cannot be used with multi-lender inscriptions
+            // because NFTs are indivisible and can't be split pro-rata among lenders.
+            // This same validation exists in settle() for off-chain order path.
             if params.multi_lender {
                 self._validate_no_nfts(params.collateral_assets.span());
             }
@@ -453,7 +454,9 @@ pub mod StelaProtocol {
             // Only borrower can repay
             assert(caller == inscription.borrower, Errors::UNAUTHORIZED);
 
-            // Validate timing: can repay anytime between signed_at and signed_at + duration
+            // M2: Validate timing — repayment window is [signed_at, signed_at + duration] INCLUSIVE.
+            // The borrower CAN repay exactly ON the deadline (<=). Liquidation uses strict (>)
+            // so there is no overlap: repay at due_to is valid, liquidate requires > due_to.
             let due_to = inscription.signed_at + inscription.duration;
             assert(timestamp >= inscription.signed_at, Errors::REPAY_TOO_EARLY);
             assert(timestamp <= due_to, Errors::REPAY_WINDOW_CLOSED);
@@ -548,6 +551,13 @@ pub mod StelaProtocol {
             // because tracked balances already reflect partial fills — using BPS percentage
             // would double-count the scaling.
             let total_supply = self.total_supply.read(inscription_id);
+
+            // H1 FIX: Guard against division by zero when total_supply == 0.
+            // If no shares exist, there's nothing to redeem — return early.
+            if total_supply == 0 {
+                self.reentrancy_guard.end();
+                return;
+            }
 
             // Burn shares
             self.erc1155.burn(caller, inscription_id, shares);
@@ -712,7 +722,9 @@ pub mod StelaProtocol {
             self._validate_no_nfts(debt_assets.span());
             self._validate_no_nfts(interest_assets.span());
 
-            // ERC721 collateral cannot be used with multi-lender
+            // H2: ERC721 collateral cannot be used with multi-lender inscriptions
+            // because NFTs are indivisible and can't be split pro-rata among lenders.
+            // This mirrors the same validation in create_inscription.
             if order.multi_lender {
                 self._validate_no_nfts(collateral_assets.span());
             }
@@ -837,8 +849,11 @@ pub mod StelaProtocol {
                     lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, relayer_fee_bps,
                 );
 
-            // Emit events
-            self.emit(InscriptionCreated { inscription_id, creator: caller, is_borrow: true });
+            // L1: Emit InscriptionCreated with the borrower as creator (not the relayer)
+            // for indexing parity with create_inscription, where the creator is always
+            // the party who initiated the order. settle() is always a borrow order
+            // (the InscriptionOrder is signed by the borrower), so is_borrow = true.
+            self.emit(InscriptionCreated { inscription_id, creator: borrower, is_borrow: true });
             self
                 .emit(
                     InscriptionSigned {
@@ -1431,6 +1446,11 @@ pub mod StelaProtocol {
             while i < debt_count {
                 let asset = self.inscription_debt_assets.read((inscription_id, i));
                 let total_amount = scale_by_percentage(asset.value, percentage);
+                // M3: Integer division intentionally rounds DOWN (floor). This means the
+                // relayer fee is rounded in the borrower's favor — they receive slightly
+                // more, the relayer slightly less. This is acceptable: rounding up could
+                // cause net_amount to underflow if total_amount is very small, and the
+                // fee beneficiary (relayer) should not extract more than the exact BPS rate.
                 let fee_amount = if relayer_fee_bps > 0 {
                     (total_amount * relayer_fee_bps) / MAX_BPS
                 } else {
@@ -1547,6 +1567,12 @@ pub mod StelaProtocol {
 
         /// Redeem debt assets using tracked per-inscription balances.
         /// Uses pro-rata: amount = tracked_balance * shares / total_supply.
+        ///
+        /// M1 NOTE: Integer division intentionally rounds DOWN (floor). This is the safe
+        /// direction — rounding up (ceiling) could cause the last redeemer's transfer to
+        /// exceed the tracked balance, reverting the transaction. Any dust from rounding
+        /// remains in the contract and is effectively donated to the last redeemer who
+        /// receives the exact tracked_balance remainder.
         fn _redeem_debt_assets(
             ref self: ContractState,
             to: ContractAddress,
@@ -1576,6 +1602,9 @@ pub mod StelaProtocol {
 
         /// Redeem interest assets using tracked per-inscription balances.
         /// Uses pro-rata: amount = tracked_balance * shares / total_supply.
+        ///
+        /// M1 NOTE: Integer division intentionally rounds DOWN (floor). See _redeem_debt_assets
+        /// for rationale. Dust from rounding remains for the last redeemer.
         fn _redeem_interest_assets(
             ref self: ContractState,
             to: ContractAddress,
@@ -1605,6 +1634,9 @@ pub mod StelaProtocol {
 
         /// Redeem collateral assets using tracked per-inscription balances.
         /// Uses pro-rata: amount = tracked_balance * shares / total_supply.
+        ///
+        /// M1 NOTE: Integer division intentionally rounds DOWN (floor). See _redeem_debt_assets
+        /// for rationale. Dust from rounding remains for the last redeemer.
         fn _redeem_collateral_assets(
             ref self: ContractState,
             to: ContractAddress,

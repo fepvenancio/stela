@@ -3,11 +3,11 @@
   "deployer": "0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310",
   "contracts": {
     "StelaProtocol": {
-      "address": "0x006885f85de0e79efc7826e2ca19ef8a13e5e4516897ad52dc505723f8ce6b90",
-      "classHash": "0x3553cff51db7718c4df992fa8168758007823225804d0d757361efb82d2c79e",
+      "address": "0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0",
+      "classHash": "0x3053af9423a142a1b1a922f5df540553721c867f459bece0c25456d46eac315",
       "relayerFee": "0 BPS",
-      "previousAddress": "0x076ca0af65ad05398076ddc067dc856a43dc1c665dc2898aea6b78dd3e120822",
-      "previousClassHash": "0x1995b30c3c6d013da2f6abde075b62cf1b18c7a276aa7440017517f5470ac2"
+      "previousAddress": "0x006885f85de0e79efc7826e2ca19ef8a13e5e4516897ad52dc505723f8ce6b90",
+      "previousClassHash": "0x3553cff51db7718c4df992fa8168758007823225804d0d757361efb82d2c79e"
     },
     "LockerAccount": {
       "classHash": "0x1a42b6c860becbb16fa5cd936576b98bca8e2ce26c3e279705cdf328ad4e8a5",
