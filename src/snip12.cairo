@@ -63,11 +63,15 @@ pub struct LendOffer {
     pub issued_debt_percentage: u256,
     /// Lender's nonce for replay protection (consumed on settle).
     pub nonce: felt252,
+    /// Privacy commitment. When non-zero, shares are committed to the privacy pool's Merkle tree
+    /// instead of minting ERC1155 to the lender. The commitment encodes (owner, inscription_id,
+    /// shares, salt) and hides the lender's identity on-chain.
+    pub lender_commitment: felt252,
 }
 
 // SNIP-12 type hash includes dependent type definitions (u256 sub-type).
 const LEND_OFFER_TYPE_HASH: felt252 = selector!(
-    "\"LendOffer\"(\"order_hash\":\"felt\",\"lender\":\"ContractAddress\",\"issued_debt_percentage\":\"u256\",\"nonce\":\"felt\")\"u256\"(\"low\":\"u128\",\"high\":\"u128\")",
+    "\"LendOffer\"(\"order_hash\":\"felt\",\"lender\":\"ContractAddress\",\"issued_debt_percentage\":\"u256\",\"nonce\":\"felt\",\"lender_commitment\":\"felt\")\"u256\"(\"low\":\"u128\",\"high\":\"u128\")",
 );
 
 const U256_TYPE_HASH: felt252 = selector!(
@@ -90,6 +94,7 @@ impl LendOfferStructHash of StructHash<LendOffer> {
             .update_with(*self.lender)
             .update_with(u256_hash)
             .update_with(*self.nonce)
+            .update_with(*self.lender_commitment)
             .finalize()
     }
 }

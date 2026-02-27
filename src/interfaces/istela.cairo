@@ -3,6 +3,7 @@
 use starknet::ContractAddress;
 use crate::types::asset::Asset;
 use crate::types::inscription::{InscriptionParams, StoredInscription};
+use crate::types::private_redeem::PrivateRedeemRequest;
 use crate::types::signed_order::SignedOrder;
 
 #[starknet::interface]
@@ -41,6 +42,14 @@ pub trait IStelaProtocol<TContractState> {
     /// If liquidated: redeemer receives pro-rata collateral assets.
     /// Burns the redeemed shares. Callable by any share holder.
     fn redeem(ref self: TContractState, inscription_id: u256, shares: u256);
+
+    /// Privately redeem shares using a ZK proof via the privacy pool.
+    /// The proof verifies ownership of committed shares without revealing the lender.
+    /// Assets are distributed pro-rata to request.recipient.
+    /// Callable by anyone (the ZK proof provides authorization).
+    fn private_redeem(
+        ref self: TContractState, request: PrivateRedeemRequest, proof: Span<felt252>,
+    );
 
     /// Settle an off-chain signed order, creating and filling an inscription in one transaction.
     /// A relayer (any caller) submits pre-signed borrower order and lender offer.
@@ -122,6 +131,9 @@ pub trait IStelaProtocol<TContractState> {
     /// Returns the minimum valid nonce for a maker (orders with nonce < this are invalid).
     fn get_maker_min_nonce(self: @TContractState, maker: ContractAddress) -> felt252;
 
+    /// Get the privacy pool contract address.
+    fn get_privacy_pool(self: @TContractState) -> ContractAddress;
+
     // --- Admin functions ---
 
     /// Set the protocol fee (in BPS). Only owner.
@@ -141,6 +153,9 @@ pub trait IStelaProtocol<TContractState> {
 
     /// Set the locker implementation class hash. Only owner.
     fn set_implementation_hash(ref self: TContractState, implementation_hash: felt252);
+
+    /// Set the privacy pool contract address. Only owner.
+    fn set_privacy_pool(ref self: TContractState, privacy_pool: ContractAddress);
 
     /// Pause the protocol. Only owner.
     fn pause(ref self: TContractState);

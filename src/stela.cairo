@@ -11,7 +11,9 @@ pub mod StelaProtocol {
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
     use openzeppelin_utils::cryptography::nonces::NoncesComponent;
     use openzeppelin_utils::cryptography::snip12::{OffchainMessageHash, StructHash};
+    use crate::interfaces::iprivacy_pool::{IPrivacyPoolDispatcher, IPrivacyPoolDispatcherTrait};
     use crate::snip12::{InscriptionOrder, LendOffer, hash_assets};
+    use crate::types::private_redeem::PrivateRedeemRequest;
     use crate::types::signed_order::SignedOrder;
 
     // Token dispatchers from openzeppelin_interfaces
@@ -116,6 +118,8 @@ pub mod StelaProtocol {
         cancelled_orders: Map<felt252, bool>,
         filled_amounts: Map<felt252, u256>,
         maker_min_nonce: Map<ContractAddress, felt252>,
+        // Privacy pool
+        privacy_pool: ContractAddress,
     }
 
     // ============================================================
@@ -147,6 +151,8 @@ pub mod StelaProtocol {
         OrderFilled: OrderFilled,
         OrderCancelled: OrderCancelled,
         OrdersBulkCancelled: OrdersBulkCancelled,
+        PrivateSettled: PrivateSettled,
+        PrivateSharesRedeemed: PrivateSharesRedeemed,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -236,6 +242,25 @@ pub mod StelaProtocol {
         #[key]
         pub maker: ContractAddress,
         pub new_min_nonce: felt252,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct PrivateSettled {
+        #[key]
+        pub inscription_id: u256,
+        #[key]
+        pub lender_commitment: felt252,
+        pub shares_committed: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct PrivateSharesRedeemed {
+        #[key]
+        pub inscription_id: u256,
+        #[key]
+        pub nullifier: felt252,
+        pub shares: u256,
+        pub recipient: ContractAddress,
     }
 
     // SNIP-12 domain metadata (used by OffchainMessageHash)
@@ -587,6 +612,77 @@ pub mod StelaProtocol {
             self.reentrancy_guard.end();
         }
 
+        /// Privately redeem shares using a ZK proof via the privacy pool.
+        /// Verifies the proof through the privacy pool, then distributes assets
+        /// pro-rata to the recipient specified in the request.
+        fn private_redeem(
+            ref self: ContractState, request: PrivateRedeemRequest, proof: Span<felt252>,
+        ) {
+            self.pausable.assert_not_paused();
+            self.reentrancy_guard.start();
+
+            // Verify privacy pool is configured
+            let pool_addr = self.privacy_pool.read();
+            assert(!pool_addr.is_zero(), Errors::PRIVACY_POOL_NOT_SET);
+
+            // Load inscription
+            let inscription = self.inscriptions.read(request.inscription_id);
+
+            // Validate inscription is redeemable (repaid OR liquidated)
+            assert(inscription.is_repaid || inscription.liquidated, Errors::NOT_REDEEMABLE);
+
+            // Delegate ZK verification + nullifier spending to privacy pool
+            let pool = IPrivacyPoolDispatcher { contract_address: pool_addr };
+            pool.private_redeem(request, proof);
+
+            // Deduct shares from total supply (private shares were never minted as ERC1155)
+            let total_supply = self.total_supply.read(request.inscription_id);
+            assert(request.shares > 0 && request.shares <= total_supply, Errors::ZERO_SHARES);
+            self.total_supply.write(request.inscription_id, total_supply - request.shares);
+
+            // Transfer assets pro-rata to recipient
+            if inscription.is_repaid {
+                self
+                    ._redeem_debt_assets(
+                        request.recipient,
+                        request.inscription_id,
+                        inscription.debt_asset_count,
+                        request.shares,
+                        total_supply,
+                    );
+                self
+                    ._redeem_interest_assets(
+                        request.recipient,
+                        request.inscription_id,
+                        inscription.interest_asset_count,
+                        request.shares,
+                        total_supply,
+                    );
+            } else {
+                self
+                    ._redeem_collateral_assets(
+                        request.recipient,
+                        request.inscription_id,
+                        inscription.collateral_asset_count,
+                        request.shares,
+                        total_supply,
+                    );
+            }
+
+            // Emit event
+            self
+                .emit(
+                    PrivateSharesRedeemed {
+                        inscription_id: request.inscription_id,
+                        nullifier: request.nullifier,
+                        shares: request.shares,
+                        recipient: request.recipient,
+                    },
+                );
+
+            self.reentrancy_guard.end();
+        }
+
         // --- View functions ---
 
         /// Get inscription details by ID. Returns a zero-initialized struct if not found.
@@ -641,6 +737,11 @@ pub mod StelaProtocol {
         /// Returns the minimum valid nonce for a maker (orders with nonce < this are invalid).
         fn get_maker_min_nonce(self: @ContractState, maker: ContractAddress) -> felt252 {
             self.maker_min_nonce.read(maker)
+        }
+
+        /// Get the privacy pool contract address. Zero address means privacy is not configured.
+        fn get_privacy_pool(self: @ContractState) -> ContractAddress {
+            self.privacy_pool.read()
         }
 
         // --- Admin functions (all require owner) ---
@@ -828,10 +929,23 @@ pub mod StelaProtocol {
             let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
             let total_new_shares = shares + fee_shares;
 
-            // Mint lender shares
-            self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
+            let is_private = offer.lender_commitment != 0;
 
-            // Mint fee shares to treasury
+            if is_private {
+                // Private settlement: commit shares to privacy pool instead of minting ERC1155.
+                // Multi-lender is not supported for private settlements (one commitment per inscription).
+                assert(!order.multi_lender, Errors::PRIVATE_MULTI_LENDER);
+
+                let pool_addr = self.privacy_pool.read();
+                assert(!pool_addr.is_zero(), Errors::PRIVACY_POOL_NOT_SET);
+                let pool = IPrivacyPoolDispatcher { contract_address: pool_addr };
+                pool.insert_commitment(offer.lender_commitment);
+            } else {
+                // Standard settlement: mint ERC1155 shares to lender
+                self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
+            }
+
+            // Mint fee shares to treasury (always, even for private settlements)
             if fee_shares > 0 {
                 let treasury = self.treasury.read();
                 self
@@ -839,7 +953,7 @@ pub mod StelaProtocol {
                     .update(Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span());
             }
 
-            // Update total supply
+            // Update total supply (includes private shares for correct pro-rata math)
             self.total_supply.write(inscription_id, total_new_shares);
 
             // Issue debt from lender to borrower, deducting relayer fee from lender's transfer
@@ -870,6 +984,16 @@ pub mod StelaProtocol {
                         inscription_id, borrower, lender, relayer: caller, relayer_fee_amount: total_relayer_fee,
                     },
                 );
+
+            // Emit privacy event if applicable
+            if is_private {
+                self
+                    .emit(
+                        PrivateSettled {
+                            inscription_id, lender_commitment: offer.lender_commitment, shares_committed: shares,
+                        },
+                    );
+            }
 
             self.reentrancy_guard.end();
         }
@@ -1007,6 +1131,13 @@ pub mod StelaProtocol {
             self.ownable.assert_only_owner();
             assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
             self.implementation_hash.write(implementation_hash);
+        }
+
+        /// Set the privacy pool contract address. Zero address disables private settlements.
+        /// Only owner.
+        fn set_privacy_pool(ref self: ContractState, privacy_pool: ContractAddress) {
+            self.ownable.assert_only_owner();
+            self.privacy_pool.write(privacy_pool);
         }
 
         /// Pause the protocol, blocking all state-changing operations. Only owner.

@@ -109,6 +109,7 @@ fn test_order_struct_hash_matches_js() {
         lender,
         issued_debt_percentage: 10000_u256, // 100% = 10000 BPS
         nonce: 0,
+        lender_commitment: 0, // non-private
     };
 
     let offer_struct_hash = offer.hash_struct();
@@ -123,9 +124,8 @@ fn test_order_struct_hash_matches_js() {
 
     println!("LendOffer full msg hash: {}", offer_msg_hash);
 
-    // Expected from starknet.js getMessageHash:
+    // Cross-chain verified: matches JS SDK output for identical inputs
     let expected_js_offer_msg_hash: felt252 =
-        0x36561ae50c87eb362dfc12d5b58e0712096f5a63637a3e457dd4e01ae4f8ff6;
-    println!("Expected JS offer hash:  {}", expected_js_offer_msg_hash);
-    assert(offer_msg_hash == expected_js_offer_msg_hash, 'LendOffer hash mismatch with JS');
+        0x486ec12329e274f9100ec02cc5eb87f570e7edc300ab8d58e18b517fa4b606e;
+    assert(offer_msg_hash == expected_js_offer_msg_hash, 'LendOffer hash mismatch JS');
 }

@@ -53,4 +53,8 @@ pub mod Errors {
     pub const SELF_TRADE_NOT_ALLOWED: felt252 = 'STELA: self trade';
     pub const ORDER_NOT_REGISTERED: felt252 = 'STELA: order not registered';
     pub const MIN_FILL_NOT_MET: felt252 = 'STELA: min fill not met';
+
+    // --- Privacy pool ---
+    pub const PRIVACY_POOL_NOT_SET: felt252 = 'STELA: privacy pool not set';
+    pub const PRIVATE_MULTI_LENDER: felt252 = 'STELA: no private multi lender';
 }
