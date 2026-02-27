@@ -339,11 +339,16 @@ After deployment, record all addresses:
 
 | Contract | Sepolia | Mainnet |
 |---|---|---|
-| StelaProtocol | `0x...` | `0x...` |
-| LockerAccount (class hash) | `0x...` | `0x...` |
-| Inscription NFT | `0x...` | `0x...` |
-| SNIP-14 Registry | `0x...` | `0x...` |
-| Treasury | `0x...` | `0x...` |
+| StelaProtocol | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` | -- |
+| StelaProtocol (previous) | `0x006885f85de0e79efc7826e2ca19ef8a13e5e4516897ad52dc505723f8ce6b90` | -- |
+| LockerAccount (class hash) | `0x1a42b6c860becbb16fa5cd936576b98bca8e2ce26c3e279705cdf328ad4e8a5` | -- |
+| Inscription NFT (MockERC721) | `0x04f2345306bf8ef1c8c1445661354ef08421aa092459445a5d6b46641237e943` | -- |
+| SNIP-14 Registry (MockRegistry) | `0x0499c5c4929b22fbf1ebd8c500f570b2ec5bd8a43a84ee63e92bf8ac7f9f422b` | -- |
+| Mock USDC (debt token) | `0x034a0cf09c79e7f20fb2136212f27b7dd88e91f9a24b2ac50c5c41ff6b30c59d` | -- |
+| Mock WETH (collateral token) | `0x07e86764396d61d2179cd1a48033fa4f30897cb172464961a80649aff4da9bdd` | -- |
+| Mock DAI (interest token) | `0x0479f31a23241b1337375b083099bd1672716edbf908b1b30148a648657a1cee` | -- |
+
+The deployer address is `0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310`.
 
 Update the `@stela/core` package (`packages/core/src/constants.ts`) in the monorepo with these addresses after deployment.
 
