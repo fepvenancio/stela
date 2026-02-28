@@ -834,27 +834,42 @@ pub mod StelaProtocol {
             let order_msg_hash = order.get_message_hash(order.borrower);
             assert(offer.order_hash == order_msg_hash, Errors::INVALID_ORDER);
 
+            // Detect private settlement: lender_commitment != 0 AND lender is zero address.
+            // In private mode, the lender pre-deposited tokens into the privacy pool,
+            // so we skip lender signature/nonce and pull tokens from the pool instead.
+            let is_private = offer.lender_commitment != 0;
+            let is_anonymous = offer.lender.is_zero();
+
+            if is_private {
+                // Private settlement requires lender to be zero (anonymous)
+                assert(is_anonymous, Errors::PRIVATE_LENDER_MUST_BE_ZERO);
+            }
+
             // 3. Verify borrower signature via ISRC6
             let borrower_account = ISRC6Dispatcher { contract_address: order.borrower };
             let borrower_valid = borrower_account.is_valid_signature(order_msg_hash, borrower_sig);
             assert(borrower_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
 
-            // 4. Verify lender signature via ISRC6
-            let lender_msg_hash = offer.get_message_hash(offer.lender);
-            let lender_account = ISRC6Dispatcher { contract_address: offer.lender };
-            let lender_valid = lender_account.is_valid_signature(lender_msg_hash, lender_sig);
-            assert(lender_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+            // 4. Verify lender signature via ISRC6 (skip for private/anonymous settlement)
+            if !is_anonymous {
+                let lender_msg_hash = offer.get_message_hash(offer.lender);
+                let lender_account = ISRC6Dispatcher { contract_address: offer.lender };
+                let lender_valid = lender_account.is_valid_signature(lender_msg_hash, lender_sig);
+                assert(lender_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+            }
 
-            // 5. Consume both nonces
+            // 5. Consume nonces (skip lender nonce for private — deposit commitment is one-time auth)
             self.nonces.use_checked_nonce(order.borrower, order.nonce);
-            self.nonces.use_checked_nonce(offer.lender, offer.nonce);
+            if !is_anonymous {
+                self.nonces.use_checked_nonce(offer.lender, offer.nonce);
+            }
 
             // 6. Create inscription
             let borrower = order.borrower;
-            let lender = offer.lender;
+            let lender = offer.lender; // zero address for private settlements
             let is_swap = order.duration == 0;
 
-            // Compute inscription ID
+            // Compute inscription ID (lender is zero for private — makes ID independent of lender identity)
             let inscription_id = self
                 ._compute_inscription_id(
                     borrower, lender, order.duration, order.deadline, timestamp, debt_assets.span(),
@@ -873,7 +888,7 @@ pub mod StelaProtocol {
                 MAX_BPS
             };
 
-            // Store inscription
+            // Store inscription (lender = zero for private settlements)
             let stored = StoredInscription {
                 borrower,
                 lender,
@@ -929,8 +944,6 @@ pub mod StelaProtocol {
             let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
             let total_new_shares = shares + fee_shares;
 
-            let is_private = offer.lender_commitment != 0;
-
             if is_private {
                 // Private settlement: commit shares to privacy pool instead of minting ERC1155.
                 // Multi-lender is not supported for private settlements (one commitment per inscription).
@@ -939,6 +952,11 @@ pub mod StelaProtocol {
                 let pool_addr = self.privacy_pool.read();
                 assert(!pool_addr.is_zero(), Errors::PRIVACY_POOL_NOT_SET);
                 let pool = IPrivacyPoolDispatcher { contract_address: pool_addr };
+
+                // Consume the lender's deposit commitment (one-time use)
+                pool.consume_deposit(offer.lender_commitment);
+
+                // Insert share commitment into Merkle tree
                 pool.insert_commitment(offer.lender_commitment);
             } else {
                 // Standard settlement: mint ERC1155 shares to lender
@@ -956,12 +974,23 @@ pub mod StelaProtocol {
             // Update total supply (includes private shares for correct pro-rata math)
             self.total_supply.write(inscription_id, total_new_shares);
 
-            // Issue debt from lender to borrower, deducting relayer fee from lender's transfer
+            // Issue debt: from lender (standard) or from privacy pool (private)
             let relayer_fee_bps = self.relayer_fee.read();
-            let total_relayer_fee = self
-                ._issue_debt_with_fee(
-                    lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, relayer_fee_bps,
-                );
+            let total_relayer_fee = if is_private {
+                // Private settlement: pull debt tokens from privacy pool to borrower (and relayer)
+                let pool_addr = self.privacy_pool.read();
+                self
+                    ._issue_debt_from_pool(
+                        pool_addr, borrower, caller, inscription_id, debt_assets.len(), actual_percentage,
+                        relayer_fee_bps,
+                    )
+            } else {
+                // Standard settlement: transfer_from lender to borrower with relayer fee
+                self
+                    ._issue_debt_with_fee(
+                        lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, relayer_fee_bps,
+                    )
+            };
 
             // L1: Emit InscriptionCreated with the borrower as creator (not the relayer)
             // for indexing parity with create_inscription, where the creator is always
@@ -1599,6 +1628,49 @@ pub mod StelaProtocol {
                 // Transfer fee: lender -> relayer
                 if fee_amount > 0 {
                     erc20.transfer_from(from, relayer, fee_amount);
+                    total_fee = total_fee + fee_amount;
+                }
+
+                i += 1;
+            };
+            total_fee
+        }
+
+        /// Issue debt from privacy pool to borrower with relayer fee deduction.
+        /// Instead of transfer_from(lender), calls pull_deposit_tokens on the privacy pool
+        /// to transfer pre-deposited tokens to the borrower and relayer.
+        /// Returns the total fee amount across all debt assets.
+        fn _issue_debt_from_pool(
+            ref self: ContractState,
+            pool_address: ContractAddress,
+            to: ContractAddress,
+            relayer: ContractAddress,
+            inscription_id: u256,
+            debt_count: u32,
+            percentage: u256,
+            relayer_fee_bps: u256,
+        ) -> u256 {
+            let pool = IPrivacyPoolDispatcher { contract_address: pool_address };
+            let mut total_fee: u256 = 0;
+            let mut i: u32 = 0;
+            while i < debt_count {
+                let asset = self.inscription_debt_assets.read((inscription_id, i));
+                let total_amount = scale_by_percentage(asset.value, percentage);
+                let fee_amount = if relayer_fee_bps > 0 {
+                    (total_amount * relayer_fee_bps) / MAX_BPS
+                } else {
+                    0
+                };
+                let net_amount = total_amount - fee_amount;
+
+                // Pull net amount: pool -> borrower
+                if net_amount > 0 {
+                    pool.pull_deposit_tokens(asset.asset, to, net_amount);
+                }
+
+                // Pull fee: pool -> relayer
+                if fee_amount > 0 {
+                    pool.pull_deposit_tokens(asset.asset, relayer, fee_amount);
                     total_fee = total_fee + fee_amount;
                 }
 

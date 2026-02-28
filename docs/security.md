@@ -1,93 +1,12 @@
-# Stela Protocol -- Security Model
+# SECURITY.md -- Stela Protocol Security Model
 
-## Overview
-
-Stela handles custody of user assets (ERC-20, ERC-721, ERC-1155, ERC-4626 tokens) across its lifecycle. The security model addresses collateral lockdown, access control, reentrancy protection, input validation, and fee integrity. This document describes every security mechanism present in the code.
+All security mechanisms present in the StelaProtocol and LockerAccount contracts.
 
 ---
 
-## 1. Locker Allowlist Lockdown
+## 1. Reentrancy Guards
 
-The `LockerAccount` (`src/locker_account.cairo`) is a StarkNet account contract that holds collateral during the loan period. Its primary security mechanism is an **allowlist-based lockdown**.
-
-### How It Works
-
-When a locker is created, it starts in the **locked** state (`unlocked = false`). In this state:
-
-- **`__validate__`** iterates over every `Call` in the transaction and asserts that each call's `selector` is in the `allowed_selectors` map. If any selector is not allowlisted, the entire transaction is rejected with `STELA: forbidden selector`.
-- **`__execute__`** performs the same check again as defense-in-depth before forwarding calls to the target contracts.
-- **`__validate_declare__`** rejects all `declare` transactions while locked, preventing deployment of arbitrary classes from the locker.
-
-### Allowlist Management
-
-The protocol owner controls which selectors are allowed via:
-
-```
-fn set_locker_allowed_selector(locker: ContractAddress, selector: felt252, allowed: bool)
-```
-
-This is an owner-only function on `StelaProtocol` (enforced by `self.ownable.assert_only_owner()`). Before calling the locker, it validates that the target address is a registered locker via `assert(self.is_locker.read(locker))`.
-
-Typical allowlisted selectors would be governance functions like `vote` and `delegate`, enabling the borrower to participate in governance with locked tokens while preventing any asset movement.
-
-### Unlocking
-
-When the borrower repays the loan, the protocol calls `locker.unlock()`, setting `unlocked = true`. After this, the locker permits all calls -- the borrower regains full control of the collateral.
-
-### Authorization
-
-Only the Stela protocol contract address (stored as `stela_contract` in the locker's constructor) can call:
-- `pull_assets` -- Transfer collateral from locker to Stela contract (used during liquidation).
-- `unlock` -- Remove execution restrictions (used during repayment).
-- `set_allowed_selector` -- Add or remove allowlisted selectors.
-
-All three check `assert(caller == stela, Errors::UNAUTHORIZED)`.
-
----
-
-## 2. Pausable Protocol
-
-The `StelaProtocol` integrates OpenZeppelin's `PausableComponent`. The following functions check `self.pausable.assert_not_paused()` before executing:
-
-- `create_inscription`
-- `sign_inscription`
-- `repay`
-- `liquidate`
-- `redeem`
-- `settle`
-- `fill_signed_order`
-
-### Pause/Unpause
-
-Only the contract owner can pause or unpause:
-
-```cairo
-fn pause(ref self: ContractState) {
-    self.ownable.assert_only_owner();
-    self.pausable.pause();
-}
-
-fn unpause(ref self: ContractState) {
-    self.ownable.assert_only_owner();
-    self.pausable.unpause();
-}
-```
-
-The pause status is readable via `is_paused()`.
-
-### What Is NOT Paused
-
-View functions (`get_inscription`, `get_locker`, `convert_to_shares`, `get_inscription_fee`, `get_treasury`, `is_paused`, `nonces`, `get_relayer_fee`) remain accessible when paused.
-
-Admin configuration functions (`set_inscription_fee`, `set_treasury`, `set_registry`, `set_inscriptions_nft`, `set_relayer_fee`, `set_implementation_hash`, `set_locker_allowed_selector`) are also not paused -- the owner can reconfigure during an emergency.
-
-`cancel_inscription` is also not paused, allowing creators to cancel unfilled inscriptions even during an emergency.
-
----
-
-## 3. Reentrancy Guards
-
-The `StelaProtocol` integrates OpenZeppelin's `ReentrancyGuardComponent`. The following functions are protected:
+The `StelaProtocol` integrates OpenZeppelin's `ReentrancyGuardComponent`. Protected functions:
 
 | Function | External Calls Made |
 |---|---|
@@ -96,164 +15,101 @@ The `StelaProtocol` integrates OpenZeppelin's `ReentrancyGuardComponent`. The fo
 | `liquidate` | Locker pull_assets (triggers ERC-20/721/1155 transfers) |
 | `redeem` | ERC-1155 burn, ERC-20/721/1155 transfers (asset distribution) |
 | `settle` | All of the above (create + sign in one transaction) |
-| `fill_signed_order` | ISRC6 signature verification (first fill only), then all `_fill_inscription` calls (NFT mint, registry create_account, ERC-20/721/1155 transfers) |
+| `private_redeem` | Privacy pool `private_redeem` (ZK verification), ERC-20/721/1155 transfers |
+| `fill_signed_order` | ISRC6 signature verification (first fill only), then NFT mint, registry create_account, ERC-20/721/1155 transfers |
 
-Each function calls `self.reentrancy_guard.start()` at the beginning and `self.reentrancy_guard.end()` at the end. If a malicious token contract attempts to re-enter any of these functions, the guard reverts.
+Each calls `self.reentrancy_guard.start()` at entry and `self.reentrancy_guard.end()` at exit.
 
-### Functions Without Reentrancy Guard
-
-- `create_inscription` -- Makes no external calls (only stores data and emits events).
-- `cancel_inscription` -- Makes no external calls (only clears storage and emits events).
-- All view functions and admin configuration functions.
+**Unguarded functions** (make no external calls):
+- `create_inscription` -- stores data, emits event
+- `cancel_inscription` -- clears storage, emits event
+- All view functions and admin configuration functions
 
 ---
 
-## 4. Access Control
+## 2. Pausable Protocol
 
-### Owner-Only Functions (OwnableComponent)
+OpenZeppelin `PausableComponent`. Paused functions (check `assert_not_paused`):
 
-The contract owner (set in the constructor, transferable via OpenZeppelin's `OwnableMixinImpl`) can call:
+- `create_inscription`
+- `sign_inscription`
+- `repay`
+- `liquidate`
+- `redeem`
+- `private_redeem`
+- `settle`
+- `fill_signed_order`
+
+**Not paused** (always accessible):
+- View functions: `get_inscription`, `get_locker`, `convert_to_shares`, `get_inscription_fee`, `get_treasury`, `is_paused`, `nonces`, `get_relayer_fee`, `get_privacy_pool`
+- Admin functions: `set_inscription_fee`, `set_treasury`, `set_registry`, `set_inscriptions_nft`, `set_relayer_fee`, `set_implementation_hash`, `set_locker_allowed_selector`, `set_privacy_pool`
+- `cancel_inscription` -- allows creators to cancel unfilled inscriptions during emergencies
+- `cancel_order`, `cancel_orders_by_nonce` -- allow makers to cancel signed orders during emergencies
+
+Only the owner can call `pause()` / `unpause()`.
+
+---
+
+## 3. Access Control
+
+### Owner-Only (OwnableComponent)
 
 | Function | Purpose |
 |---|---|
-| `set_inscription_fee(fee)` | Set the protocol fee in BPS |
-| `set_treasury(treasury)` | Set the fee recipient address |
-| `set_registry(registry)` | Set the SNIP-14 TBA registry address |
-| `set_inscriptions_nft(nft)` | Set the inscription NFT contract address |
-| `set_relayer_fee(fee)` | Set the relayer fee for off-chain settlements |
-| `set_implementation_hash(hash)` | Set the LockerAccount class hash |
-| `pause()` | Pause the protocol |
-| `unpause()` | Unpause the protocol |
+| `set_inscription_fee(fee)` | Set protocol fee in BPS |
+| `set_treasury(treasury)` | Set fee recipient address |
+| `set_registry(registry)` | Set SNIP-14 TBA registry |
+| `set_inscriptions_nft(nft)` | Set inscription NFT contract |
+| `set_relayer_fee(fee)` | Set relayer fee for off-chain settlement |
+| `set_implementation_hash(hash)` | Set LockerAccount class hash |
+| `set_privacy_pool(privacy_pool)` | Set privacy pool contract (zero disables) |
 | `set_locker_allowed_selector(locker, selector, allowed)` | Configure locker allowlist |
+| `pause()` | Pause protocol |
+| `unpause()` | Unpause protocol |
 
 All enforced via `self.ownable.assert_only_owner()`.
 
-### Borrower-Only Functions
+### Borrower-Only
 
 | Function | Check |
 |---|---|
 | `repay(inscription_id)` | `assert(caller == inscription.borrower, Errors::UNAUTHORIZED)` |
 
-### Creator-Only Functions
+### Creator-Only
 
 | Function | Check |
 |---|---|
 | `cancel_inscription(inscription_id)` | `assert(caller == creator, Errors::NOT_CREATOR)` where creator is the non-zero address between borrower and lender |
 
-### Maker-Only Functions (Signed Order)
+### Maker-Only
 
 | Function | Check |
 |---|---|
 | `cancel_order(order)` | `assert(caller == order.maker, Errors::UNAUTHORIZED)` |
 
-### Caller-Based Functions (Signed Order)
+### Caller-Based
 
 | Function | Check |
 |---|---|
-| `cancel_orders_by_nonce(min_nonce)` | Operates on `maker_min_nonce[caller]`; any address can set its own min nonce. `min_nonce` must be strictly greater than the current value. |
+| `cancel_orders_by_nonce(min_nonce)` | Operates on `maker_min_nonce[caller]`; any address can set its own min nonce. Must strictly increase. |
 
-### Permissionless Functions
+### Permissionless
 
 | Function | Who Can Call | Condition |
 |---|---|---|
-| `create_inscription` | Anyone | Protocol not paused, valid params |
-| `sign_inscription` | Anyone (counterparty) | Protocol not paused, inscription not expired, within BPS limits |
-| `liquidate` | Anyone | Protocol not paused, `signed_at + duration` has passed, not repaid, not already liquidated |
-| `redeem` | Any share holder | Protocol not paused, inscription is repaid or liquidated, caller has shares |
-| `settle` | Anyone (relayer) | Protocol not paused, valid signatures from both parties |
-| `fill_signed_order` | Anyone (taker) | Protocol not paused, caller != maker (self-trade prevention), caller == `allowed_taker` if nonzero, order not expired, order not cancelled, `fill_bps >= min_fill_bps`, no overfill, valid SNIP-12 signature on first fill |
+| `create_inscription` | Anyone | Not paused, valid params |
+| `sign_inscription` | Anyone (counterparty) | Not paused, not expired, within BPS limits |
+| `liquidate` | Anyone | Not paused, `timestamp > signed_at + duration`, not repaid, not liquidated |
+| `redeem` | Any share holder | Not paused, inscription is repaid or liquidated, caller has shares |
+| `settle` | Anyone (relayer) | Not paused, valid signatures from both parties |
+| `private_redeem` | Anyone | Not paused, privacy pool configured, inscription repaid or liquidated, valid ZK proof |
+| `fill_signed_order` | Anyone (taker) | Not paused, caller != maker, caller == allowed_taker if nonzero, not expired, not cancelled, fill >= min_fill_bps, no overfill, valid signature on first fill |
 
 ---
 
-## 5. Asset Validation Rules
+## 4. Per-Inscription Balance Tracking
 
-### `_validate_assets` (applied to all asset arrays)
-
-For every asset in the array:
-- `asset.asset` (contract address) must not be zero: `assert(!asset.asset.is_zero(), Errors::INVALID_ADDRESS)`.
-- For fungible types (ERC20, ERC4626, ERC1155): `asset.value > 0` is required: `assert(asset.value > 0, Errors::ZERO_ASSET_VALUE)`.
-- ERC721 assets skip the value check (they use `token_id` instead).
-
-### `_validate_no_nfts` (applied to debt and interest arrays, and to collateral in multi-lender mode)
-
-Rejects any asset with `AssetType::ERC721` or `AssetType::ERC1155`:
-
-**Why ERC-721 is forbidden in debt/interest:**
-- NFTs are non-fungible and cannot be scaled by percentage for partial fills or split pro-rata for redemption.
-
-**Why ERC-1155 is forbidden in debt/interest:**
-- The redemption functions `_redeem_debt_assets` and `_redeem_interest_assets` use `IERC20Dispatcher` to transfer assets. If ERC-1155 tokens were used as debt or interest, they could be successfully created, signed, and repaid, but would permanently lock lender funds on redeem because `IERC20.transfer` would revert when called on an ERC-1155 contract.
-
-**Why ERC-721/ERC-1155 is forbidden in multi-lender collateral:**
-- NFTs are indivisible and cannot be split proportionally among multiple lenders on partial fills.
-
-### Array Length Cap
-
-Each asset array (debt, interest, collateral) is capped at `MAX_ASSETS = 10`:
-
-```cairo
-assert(params.debt_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
-assert(params.collateral_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
-assert(params.interest_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
-```
-
-This prevents gas griefing via unbounded loops in asset processing.
-
-### Non-Empty Requirements
-
-- `debt_assets` must have at least one asset: `assert(params.debt_assets.len() > 0, Errors::ZERO_DEBT_ASSETS)`.
-- `collateral_assets` must have at least one asset: `assert(params.collateral_assets.len() > 0, Errors::ZERO_COLLATERAL)`.
-- `interest_assets` can be empty (zero-interest loans are valid).
-
----
-
-## 6. Treasury Fee System
-
-### Protocol Fee (inscription_fee)
-
-- Stored as `inscription_fee` in BPS. Default: 10 (0.1%).
-- Applied on every `sign_inscription` and `settle` call.
-- Calculated as: `fee_shares = lender_shares * inscription_fee / MAX_BPS`.
-- Fee shares are minted as ERC-1155 tokens to the `treasury` address.
-- The treasury can redeem these shares like any other share holder.
-
-### Fee Cap
-
-```cairo
-fn set_inscription_fee(ref self: ContractState, fee: u256) {
-    self.ownable.assert_only_owner();
-    assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
-    self.inscription_fee.write(fee);
-}
-```
-
-The fee cannot exceed 10,000 BPS (100%), preventing excessive dilution.
-
-### Relayer Fee (relayer_fee)
-
-- Stored as `relayer_fee` in BPS. Used only in `settle` (off-chain settlement).
-- Deducted from the lender's debt transfer and sent to the relayer (transaction sender).
-- Calculated per debt asset: `fee_amount = total_amount * relayer_fee_bps / MAX_BPS`.
-- The net amount (total minus fee) goes to the borrower; the fee goes to the relayer.
-
-```cairo
-fn set_relayer_fee(ref self: ContractState, fee: u256) {
-    self.ownable.assert_only_owner();
-    assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
-    self.relayer_fee.write(fee);
-}
-```
-
-### Treasury Address
-
-- Set in the constructor (defaults to the owner address).
-- Changeable via `set_treasury`, which requires a non-zero address: `assert(!treasury.is_zero(), Errors::INVALID_ADDRESS)`.
-
----
-
-## 7. Per-Inscription Balance Tracking
-
-A critical security mechanism to prevent cross-inscription drainage. Since multiple inscriptions may use the same ERC-20 token, the contract tracks the actual balance attributed to each inscription:
+Prevents cross-inscription drainage. Since multiple inscriptions may use the same ERC-20 token, the contract tracks the actual balance attributed to each inscription:
 
 ```
 inscription_debt_balance: Map<(u256, u32), u256>
@@ -261,180 +117,260 @@ inscription_interest_balance: Map<(u256, u32), u256>
 inscription_collateral_balance: Map<(u256, u32), u256>
 ```
 
-**Credits happen during:**
-- `_pull_repayment` -- When the borrower repays, each debt and interest asset amount is credited.
-- `_pull_collateral_from_locker` -- When collateral is pulled during liquidation.
-- `_collect_collateral_for_swap` -- When collateral is collected for OTC swaps.
+**Credits:**
+- `_pull_repayment` -- borrower repays debt + interest
+- `_pull_collateral_from_locker` -- collateral pulled during liquidation
+- `_collect_collateral_for_swap` -- collateral collected for OTC swap (duration=0)
 
-**Debits happen during:**
-- `_redeem_debt_assets` -- Pro-rata deduction: `tracked_balance - amount`.
-- `_redeem_interest_assets` -- Pro-rata deduction.
-- `_redeem_collateral_assets` -- Pro-rata deduction (or full zeroing for ERC-721).
+**Debits:**
+- `_redeem_debt_assets` -- pro-rata deduction on redemption
+- `_redeem_interest_assets` -- pro-rata deduction on redemption
+- `_redeem_collateral_assets` -- pro-rata deduction (or full zeroing for ERC-721)
 
-**Pro-rata formula:** `amount = tracked_balance * shares / total_supply`
+**Redemption formula:** `amount = tracked_balance * shares / total_supply`
 
-This is used instead of percentage-based scaling because the tracked balances already account for partial fills. Using `convert_to_percentage` would double-count the scaling.
+This is used instead of percentage-based scaling because tracked balances already account for partial fills. Using `convert_to_percentage` + `scale_by_percentage` would double-count the scaling.
 
 ---
 
-## 8. Timing Checks
+## 5. Locker Allowlist Lockdown
+
+The `LockerAccount` is a SNIP-14 token-bound account that holds collateral. It uses an **allowlist** model (not a blocklist).
+
+### Locked State (default)
+
+When created, the locker starts locked (`unlocked = false`):
+
+- **`__validate__`** checks every `Call` selector against `allowed_selectors` map. Non-allowlisted selectors revert with `STELA: forbidden selector`.
+- **`__execute__`** performs the same check as defense-in-depth.
+- **`__validate_declare__`** rejects all `declare` transactions while locked.
+
+### Allowlist Management
+
+The protocol owner controls which selectors are allowed:
+
+```cairo
+fn set_locker_allowed_selector(locker: ContractAddress, selector: felt252, allowed: bool)
+```
+
+Owner-only. Validates the target is a registered locker via `assert(self.is_locker.read(locker))`. Typical allowlisted selectors: `vote`, `delegate` (governance participation with locked collateral).
+
+### Unlocking
+
+When the borrower repays, the protocol calls `locker.unlock()`, setting `unlocked = true`. After this, the locker permits all calls.
+
+### Authorization
+
+Only the Stela protocol contract (stored as `stela_contract` in the locker constructor) can call:
+- `pull_assets` -- transfer collateral from locker to Stela (liquidation)
+- `unlock` -- remove restrictions (repayment)
+- `set_allowed_selector` -- manage allowlist
+
+All three check `assert(caller == stela, Errors::UNAUTHORIZED)`.
+
+---
+
+## 6. ERC-721 First-Come-First-Served Limitation
+
+ERC-721 tokens cannot be split pro-rata. In `_redeem_collateral_assets`:
+- If `tracked_balance > 0`, the entire NFT transfers to the first redeemer regardless of share size
+- The tracked balance is set to 0 after transfer
+- Subsequent redeemers get nothing for that NFT slot
+
+This only applies in single-lender mode (ERC-721/ERC-1155 collateral is forbidden in multi-lender inscriptions).
+
+---
+
+## 7. Dual Nonce Systems
+
+### Sequential Nonces (NoncesComponent) -- for `settle()`
+
+Both borrower and lender nonces are consumed via `NoncesComponent.use_checked_nonce`. This uses an EQUALITY check (`nonce == current`), not a threshold check. Each nonce can only be used once per address.
+
+### Threshold Nonces (maker_min_nonce) -- for `fill_signed_order()`
+
+`cancel_orders_by_nonce(min_nonce)` sets `maker_min_nonce[caller] = min_nonce`. Orders with `nonce < min_nonce` are rejected. The `min_nonce` must strictly increase (`min_nonce > current`).
+
+Individual cancellation: `cancel_order(order)` sets `cancelled_orders[order_hash] = true`.
+
+---
+
+## 8. Asset Validation Rules
+
+### `_validate_assets` (all arrays)
+
+- `asset.asset` must not be zero address
+- For fungible types (ERC20, ERC4626, ERC1155): `asset.value > 0`
+- ERC721 skips value check (uses `token_id` instead)
+
+### `_validate_no_nfts` (debt, interest, multi-lender collateral)
+
+Rejects `AssetType::ERC721` and `AssetType::ERC1155`:
+
+- **Debt/interest**: ERC-721/1155 cannot be scaled by percentage. Also, redemption uses `IERC20Dispatcher` which would revert on non-ERC20 contracts.
+- **Multi-lender collateral**: NFTs are indivisible, cannot be split among multiple lenders.
+
+### Array Length Cap
+
+Each array capped at `MAX_ASSETS = 10`. Prevents gas griefing via unbounded loops.
+
+### Non-Empty Requirements
+
+- `debt_assets`: at least 1 (`ZERO_DEBT_ASSETS`)
+- `collateral_assets`: at least 1 (`ZERO_COLLATERAL`)
+- `interest_assets`: can be empty (zero-interest loans)
+
+---
+
+## 9. Off-Chain Signature Security
+
+### settle() -- SNIP-12 Typed Data
+
+- Both borrower and lender signatures verified via ISRC6 `is_valid_signature`
+- Nonces consumed via `NoncesComponent` (sequential, one-time use)
+- `LendOffer.order_hash` must equal the borrower's message hash (cryptographic binding)
+- Asset hashes verified: `hash_assets(actual) == order.{debt,interest,collateral}_hash`
+- Asset counts verified: `actual.len() == order.{debt,interest,collateral}_count`
+
+### fill_signed_order() -- Lazy Registration
+
+- First fill: SNIP-12 signature verified, order registered on-chain (`signed_orders[hash] = true`)
+- Subsequent fills: skip signature verification (on-chain registration is proof of authorization)
+- Self-trade prevention: `assert(caller != order.maker)`
+- Private taker: if `order.allowed_taker != 0`, only that address can fill
+- Minimum fill enforcement: `fill_bps >= min_fill_bps`
+- Overfill prevention: `filled + fill_bps <= order.bps`
+
+### Private Settlement (lender_commitment != 0)
+
+- Lender signature verification is SKIPPED (anonymous)
+- Lender nonce consumption is SKIPPED
+- `lender` must be zero address
+- `multi_lender` must be false
+- Privacy pool must be configured (non-zero)
+- Shares committed to Merkle tree instead of minting ERC-1155
+
+---
+
+## 10. Timing Checks
 
 ### Deadline (inscription expiry)
 
-- `create_inscription`: `assert(params.deadline > timestamp, Errors::INSCRIPTION_EXPIRED)` -- Deadline must be in the future.
-- `sign_inscription`: `assert(timestamp <= inscription.deadline, Errors::INSCRIPTION_EXPIRED)` -- Cannot sign after deadline.
-- `settle`: `assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED)` -- Cannot settle after deadline.
-- `fill_signed_order`: `assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED)` -- Cannot fill after the signed order's deadline. Additionally, `_fill_inscription` checks `assert(timestamp <= inscription.deadline)` on the underlying inscription.
+- `create_inscription`: `deadline > block_timestamp`
+- `sign_inscription`: `block_timestamp <= deadline`
+- `settle`: `block_timestamp <= order.deadline`
+- `fill_signed_order`: `block_timestamp <= order.deadline` AND `block_timestamp <= inscription.deadline`
 
 ### Repayment Window
 
-- Repay is valid between `signed_at` and `signed_at + duration`:
-  - `assert(timestamp >= inscription.signed_at, Errors::REPAY_TOO_EARLY)`
-  - `assert(timestamp <= due_to, Errors::REPAY_WINDOW_CLOSED)` where `due_to = signed_at + duration`
+- Valid between `signed_at` and `signed_at + duration` (inclusive both ends)
+- `assert(timestamp >= signed_at, REPAY_TOO_EARLY)`
+- `assert(timestamp <= signed_at + duration, REPAY_WINDOW_CLOSED)`
 
 ### Liquidation Window
 
-- Liquidation is valid only after `signed_at + duration`:
-  - `assert(timestamp > due_to, Errors::NOT_YET_LIQUIDATABLE)` where `due_to = signed_at + duration`
+- Valid only after `signed_at + duration` (strictly greater)
+- `assert(timestamp > signed_at + duration, NOT_YET_LIQUIDATABLE)`
 
 ---
 
-## 9. Double-Action Prevention
+## 11. Double-Action Prevention
 
 | Guard | Error | Purpose |
 |---|---|---|
-| `assert(!inscription.is_repaid, Errors::ALREADY_REPAID)` | In `repay` and `liquidate` | Prevents double repayment or liquidating a repaid loan |
-| `assert(!inscription.liquidated, Errors::ALREADY_LIQUIDATED)` | In `repay` and `liquidate` | Prevents repaying a liquidated loan or double liquidation |
-| `assert(inscription.signed_at > 0, Errors::INVALID_INSCRIPTION)` | In `repay` and `liquidate` | Prevents acting on unsigned inscriptions |
-| `assert(inscription.issued_debt_percentage == 0, Errors::ALREADY_SIGNED)` | In `sign_inscription` (single-lender) | Prevents double-signing a single-lender inscription |
-| `assert(inscription.issued_debt_percentage == 0, Errors::NOT_CANCELLABLE)` | In `cancel_inscription` | Prevents cancelling a partially or fully signed inscription |
-| `assert(existing.borrower.is_zero()` or `existing.lender.is_zero(), Errors::INSCRIPTION_EXISTS)` | In `create_inscription` (checks borrower if `is_borrow`, lender otherwise) and `settle` (checks both are zero) | Prevents duplicate inscription IDs |
-| `assert(current_filled + fill_bps <= order.bps, Errors::OVERFILL)` | In `fill_signed_order` | Prevents filling beyond the order's total offered BPS |
-| `assert(!self.cancelled_orders.read(order_hash), Errors::ORDER_CANCELLED)` | In `fill_signed_order` | Prevents filling a cancelled order |
-| `assert(nonce_u256 >= min_nonce_u256, Errors::INVALID_NONCE)` | In `fill_signed_order` | Rejects orders with nonce below the maker's minimum (set by `cancel_orders_by_nonce`) |
-| `assert(min_nonce_u256 > current_min_u256, Errors::INVALID_NONCE)` | In `cancel_orders_by_nonce` | Prevents no-op or decreasing nonce updates; `min_nonce` must strictly increase |
+| `!inscription.is_repaid` | `ALREADY_REPAID` | In `repay` and `liquidate` |
+| `!inscription.liquidated` | `ALREADY_LIQUIDATED` | In `repay` and `liquidate` |
+| `inscription.signed_at > 0` | `INVALID_INSCRIPTION` | In `repay` and `liquidate` |
+| `inscription.issued_debt_percentage == 0` | `ALREADY_SIGNED` | In single-lender `sign_inscription` |
+| `inscription.issued_debt_percentage == 0` | `NOT_CANCELLABLE` | In `cancel_inscription` |
+| `existing.borrower.is_zero()` / `existing.lender.is_zero()` | `INSCRIPTION_EXISTS` | In `create_inscription` and `settle` |
+| `filled + fill_bps <= order.bps` | `OVERFILL` | In `fill_signed_order` |
+| `!cancelled_orders[hash]` | `ORDER_CANCELLED` | In `fill_signed_order` |
+| `nonce >= maker_min_nonce` | `INVALID_NONCE` | In `fill_signed_order` |
+| `min_nonce > current_min` | `INVALID_NONCE` | In `cancel_orders_by_nonce` |
 
 ---
 
-## 10. Constructor Validation
+## 12. Constructor and Setter Validations
 
-The constructor validates all inputs are non-zero:
+### Constructor
 
-```cairo
-fn constructor(ref self: ContractState, owner, inscriptions_nft, registry, implementation_hash) {
-    assert(!owner.is_zero(), Errors::INVALID_ADDRESS);
-    assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS);
-    assert(!registry.is_zero(), Errors::INVALID_ADDRESS);
-    assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
-    ...
-}
-```
+All inputs validated non-zero:
+- `owner`: `!is_zero()` (`INVALID_ADDRESS`)
+- `inscriptions_nft`: `!is_zero()` (`INVALID_ADDRESS`)
+- `registry`: `!is_zero()` (`INVALID_ADDRESS`)
+- `implementation_hash`: `!= 0` (`ZERO_IMPL_HASH`)
 
-### Admin Setter Validations
+### Admin Setters
 
-All address setters reject zero addresses:
-- `set_treasury`: `assert(!treasury.is_zero(), Errors::INVALID_ADDRESS)`
-- `set_registry`: `assert(!registry.is_zero(), Errors::INVALID_ADDRESS)`
-- `set_inscriptions_nft`: `assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS)`
-- `set_implementation_hash`: `assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH)`
-- `set_locker_allowed_selector`: `assert(self.is_locker.read(locker), Errors::INVALID_ADDRESS)` -- additionally validates the target is a known locker.
+- `set_treasury`: `!treasury.is_zero()` (`INVALID_ADDRESS`)
+- `set_registry`: `!registry.is_zero()` (`INVALID_ADDRESS`)
+- `set_inscriptions_nft`: `!inscriptions_nft.is_zero()` (`INVALID_ADDRESS`)
+- `set_implementation_hash`: `implementation_hash != 0` (`ZERO_IMPL_HASH`)
+- `set_inscription_fee`: `fee <= MAX_BPS` (`FEE_TOO_HIGH`)
+- `set_relayer_fee`: `fee <= MAX_BPS` (`FEE_TOO_HIGH`)
+- `set_locker_allowed_selector`: `self.is_locker.read(locker)` (`INVALID_ADDRESS`)
+- `set_privacy_pool`: no validation (zero address disables privacy)
 
 ---
 
-## 11. Off-Chain Signature Security (settle)
+## 13. Known Limitations
 
-### Signature Verification
-
-Both the borrower and lender signatures are verified via the ISRC6 interface (`is_valid_signature`) on their respective account contracts. This delegates verification to the account's own logic (supporting Argent, Braavos, and other account implementations).
-
-### Nonce Protection
-
-Both parties' nonces are consumed via `NoncesComponent.use_checked_nonce`, preventing replay attacks. Each nonce can only be used once per address.
-
-### Order Binding
-
-The `LendOffer.order_hash` must equal the borrower's message hash (`order.get_message_hash(order.borrower)`). This cryptographically binds the lender's offer to the specific borrower's order.
-
-### Asset Hash Verification
-
-Asset arrays are not included in the signed messages directly. Instead, Poseidon hashes of each array are included in the `InscriptionOrder`. The `settle` function verifies:
-- `hash_assets(debt_assets.span()) == order.debt_hash`
-- `hash_assets(interest_assets.span()) == order.interest_hash`
-- `hash_assets(collateral_assets.span()) == order.collateral_hash`
-- `debt_assets.len() == order.debt_count`
-- `interest_assets.len() == order.interest_count`
-- `collateral_assets.len() == order.collateral_count`
-
-### Signed Order Signature Security (fill_signed_order)
-
-**Lazy registration model:** The maker's SNIP-12 signature is verified only on the first fill. Once verified, the order is registered on-chain (`signed_orders[order_hash] = true`). Subsequent fills of the same order skip signature verification -- the on-chain registration serves as proof that the order was authorized.
-
-**Self-trade prevention:** `assert(caller != order.maker)` prevents the maker from filling their own order, which would bypass economic incentives.
-
-**Private taker restriction:** If `order.allowed_taker` is nonzero, `assert(caller == order.allowed_taker)` restricts fills to a single pre-approved counterparty, enabling private OTC fills.
-
-**Nonce-based bulk cancellation:** `cancel_orders_by_nonce(min_nonce)` sets `maker_min_nonce[caller]` to a higher value. All orders with `nonce < min_nonce` are rejected in `fill_signed_order` (step 5), enabling a maker to invalidate all outstanding orders in a single transaction.
-
-**Individual cancellation:** `cancel_order(order)` sets `cancelled_orders[order_hash] = true`. The `fill_signed_order` function checks this flag (step 6) before proceeding.
-
-**Minimum fill enforcement:** If `order.min_fill_bps > 0`, each fill must meet or exceed this threshold, preventing dust fills.
-
----
-
-## 12. Known Limitations
-
-### NFT Collateral in Liquidation
-
-In a liquidation scenario with ERC-721 collateral (only possible in single-lender mode since multi-lender forbids NFT collateral), the NFT is transferred to the first redeemer regardless of share size. The tracked balance is set to zero after the first redemption. This is inherent to NFT indivisibility.
+### NFT Collateral Redemption
+In single-lender mode with ERC-721 collateral and fee shares, the NFT goes to the first redeemer. The treasury (holding fee shares) may get nothing for that NFT slot. Inherent to NFT indivisibility.
 
 ### Non-Standard Token Functions
-
-The locker's allowlist blocks known transfer selectors. Tokens with non-standard functions (e.g., custom transfer methods) could theoretically bypass the allowlist. This is documented as a known limitation.
+The locker allowlist blocks known transfer selectors. Tokens with non-standard transfer methods could theoretically bypass the allowlist.
 
 ### Partial Fill Proportionality
+For multi-lender inscriptions not fully filled, repayment and liquidation scale proportionally to `issued_debt_percentage`. If 60% filled, borrower repays 60% and 60% of collateral is at risk.
 
-For multi-lender inscriptions that are not fully filled (e.g., only 60% of debt is issued), repayment and liquidation scale proportionally to the `issued_debt_percentage`. If only 60% was filled, the borrower repays 60% and only 60% of collateral is at risk.
+### Privacy Pool Trust
+The privacy pool contract is trusted to correctly verify ZK proofs and manage nullifiers. A compromised pool could allow double-redemption.
 
 ---
 
-## 13. Error Codes Reference
+## 14. Error Codes Reference
 
 | Error Constant | Value | Triggered By |
 |---|---|---|
-| `INVALID_INSCRIPTION` | `'STELA: invalid inscription'` | Accessing non-existent or unsigned inscription |
-| `INSCRIPTION_EXISTS` | `'STELA: inscription exists'` | Creating duplicate inscription ID |
+| `INVALID_INSCRIPTION` | `'STELA: invalid inscription'` | Non-existent or unsigned inscription |
+| `INSCRIPTION_EXISTS` | `'STELA: inscription exists'` | Duplicate inscription ID |
 | `INSCRIPTION_EXPIRED` | `'STELA: inscription expired'` | Creating/signing after deadline |
-| `ALREADY_REPAID` | `'STELA: already repaid'` | Repaying or liquidating already-repaid inscription |
-| `ALREADY_LIQUIDATED` | `'STELA: already liquidated'` | Repaying or liquidating already-liquidated inscription |
+| `ALREADY_REPAID` | `'STELA: already repaid'` | Double repayment or liquidating repaid loan |
+| `ALREADY_LIQUIDATED` | `'STELA: already liquidated'` | Repaying or double-liquidating |
 | `NOT_YET_LIQUIDATABLE` | `'STELA: not yet liquidatable'` | Liquidating before duration expires |
 | `REPAY_TOO_EARLY` | `'STELA: repay too early'` | Repaying before signed_at |
+| `REPAY_WINDOW_CLOSED` | `'STELA: repay window closed'` | Repaying after duration expires |
 | `EXCEEDS_MAX_BPS` | `'STELA: exceeds max bps'` | Filling beyond 100% |
 | `NOT_REDEEMABLE` | `'STELA: not redeemable'` | Redeeming from active inscription |
-| `ZERO_SHARES` | `'STELA: zero shares'` | Redeeming 0 shares or multi-lender fill with 0% |
-| `UNAUTHORIZED` | `'STELA: unauthorized'` | Non-borrower calling repay, non-Stela calling locker |
-| `FORBIDDEN_SELECTOR` | `'STELA: forbidden selector'` | Calling non-allowlisted selector on locked locker |
-| `ZERO_DEBT_ASSETS` | `'STELA: zero debt assets'` | Creating inscription with no debt assets |
-| `ZERO_COLLATERAL` | `'STELA: zero collateral'` | Creating inscription with no collateral assets |
+| `ZERO_SHARES` | `'STELA: zero shares'` | Redeeming 0 shares or 0% fill |
+| `UNAUTHORIZED` | `'STELA: unauthorized'` | Non-borrower repay, non-Stela locker call, non-maker cancel |
+| `FORBIDDEN_SELECTOR` | `'STELA: forbidden selector'` | Non-allowlisted selector on locked locker |
+| `ZERO_DEBT_ASSETS` | `'STELA: zero debt assets'` | No debt assets |
+| `ZERO_COLLATERAL` | `'STELA: zero collateral'` | No collateral assets |
 | `NOT_CANCELLABLE` | `'STELA: not cancellable'` | Cancelling signed inscription |
-| `NOT_CREATOR` | `'STELA: not creator'` | Non-creator calling cancel |
-| `REPAY_WINDOW_CLOSED` | `'STELA: repay window closed'` | Repaying after duration expires |
-| `NFT_ALREADY_LOCKED` | `'STELA: nft already locked'` | (Reserved for future use) |
-| `ALREADY_SIGNED` | `'STELA: already signed'` | Double-signing single-lender inscription |
-| `INVALID_ADDRESS` | `'STELA: invalid address'` | Zero address in constructor/setters, non-locker in set_locker_allowed_selector |
+| `NOT_CREATOR` | `'STELA: not creator'` | Non-creator cancel |
+| `NFT_ALREADY_LOCKED` | `'STELA: nft already locked'` | (Reserved) |
+| `ALREADY_SIGNED` | `'STELA: already signed'` | Double-signing single-lender |
+| `INVALID_ADDRESS` | `'STELA: invalid address'` | Zero address, non-locker in set_locker_allowed_selector |
 | `FEE_TOO_HIGH` | `'STELA: fee too high'` | Fee exceeds MAX_BPS |
 | `ZERO_ASSET_VALUE` | `'STELA: zero asset value'` | Fungible asset with value = 0 |
 | `ZERO_IMPL_HASH` | `'STELA: zero impl hash'` | Zero implementation hash |
 | `NFT_NOT_FUNGIBLE` | `'STELA: nft not fungible'` | ERC721/ERC1155 in debt/interest or multi-lender collateral |
-| `TOO_MANY_ASSETS` | `'STELA: too many assets'` | Asset array exceeds MAX_ASSETS (10) |
-| `INVALID_SIGNATURE` | `'STELA: invalid signature'` | Failed ISRC6 signature verification in settle or fill_signed_order |
-| `INVALID_NONCE` | `'STELA: invalid nonce'` | NoncesComponent (settle), or signed order nonce below maker's min_nonce (fill_signed_order), or non-increasing min_nonce (cancel_orders_by_nonce) |
-| `ORDER_EXPIRED` | `'STELA: order expired'` | Settling after order deadline, or filling a signed order after its deadline |
-| `INVALID_ORDER` | `'STELA: invalid order'` | Asset hash/count mismatch or offer not bound to order |
-| `NFT_MULTI_LENDER` | `'STELA: nft no multi lender'` | (Reserved -- validation uses NFT_NOT_FUNGIBLE) |
-| `PAUSED` | `'STELA: paused'` | (Handled by PausableComponent) |
-| `ORDER_CANCELLED` | `'STELA: order cancelled'` | Filling a signed order that has been individually cancelled |
-| `UNAUTHORIZED_TAKER` | `'STELA: unauthorized taker'` | Caller is not the `allowed_taker` specified in a private signed order |
-| `OVERFILL` | `'STELA: overfill'` | `current_filled + fill_bps` exceeds the signed order's total `bps` |
-| `SELF_TRADE_NOT_ALLOWED` | `'STELA: self trade'` | Maker attempting to fill their own signed order |
-| `ORDER_NOT_REGISTERED` | `'STELA: order not registered'` | (Defensive: asserted in else branch after registration check) |
-| `MIN_FILL_NOT_MET` | `'STELA: min fill not met'` | `fill_bps` is below the signed order's `min_fill_bps` threshold |
+| `TOO_MANY_ASSETS` | `'STELA: too many assets'` | Array exceeds MAX_ASSETS (10) |
+| `INVALID_SIGNATURE` | `'STELA: invalid signature'` | Failed ISRC6 signature verification |
+| `INVALID_NONCE` | `'STELA: invalid nonce'` | Nonce mismatch (settle), below min (fill), non-increasing (cancel_by_nonce) |
+| `ORDER_EXPIRED` | `'STELA: order expired'` | Settling/filling after deadline |
+| `INVALID_ORDER` | `'STELA: invalid order'` | Asset hash/count mismatch, offer not bound to order |
+| `NFT_MULTI_LENDER` | `'STELA: nft no multi lender'` | (Reserved -- uses NFT_NOT_FUNGIBLE) |
+| `ORDER_CANCELLED` | `'STELA: order cancelled'` | Filling individually cancelled order |
+| `UNAUTHORIZED_TAKER` | `'STELA: unauthorized taker'` | Caller not allowed_taker |
+| `OVERFILL` | `'STELA: overfill'` | Fill exceeds order total BPS |
+| `SELF_TRADE_NOT_ALLOWED` | `'STELA: self trade'` | Maker filling own order |
+| `ORDER_NOT_REGISTERED` | `'STELA: order not registered'` | (Defensive assertion) |
+| `MIN_FILL_NOT_MET` | `'STELA: min fill not met'` | Fill below min_fill_bps |
+| `PRIVACY_POOL_NOT_SET` | `'STELA: privacy pool not set'` | Private settle/redeem without pool |
+| `PRIVATE_MULTI_LENDER` | `'STELA: no private multi lender'` | Private settlement + multi_lender |
+| `PRIVATE_LENDER_MUST_BE_ZERO` | `'STELA: private lender not zero'` | Private settlement with non-zero lender |
+| `PRIVATE_MISSING_COMMITMENT` | `'STELA: missing commitment'` | (Reserved) |

@@ -57,4 +57,6 @@ pub mod Errors {
     // --- Privacy pool ---
     pub const PRIVACY_POOL_NOT_SET: felt252 = 'STELA: privacy pool not set';
     pub const PRIVATE_MULTI_LENDER: felt252 = 'STELA: no private multi lender';
+    pub const PRIVATE_LENDER_MUST_BE_ZERO: felt252 = 'STELA: private lender not zero';
+    pub const PRIVATE_MISSING_COMMITMENT: felt252 = 'STELA: missing commitment';
 }

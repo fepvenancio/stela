@@ -174,12 +174,16 @@ starkli deploy <CLASS_HASH> <OWNER_ADDRESS> \
 
 | Contract | Address |
 |----------|---------|
-| StelaProtocol (current, privacy-enabled) | `0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5` |
-| StelaProtocol (previous) | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` |
+| StelaProtocol (current, deposit-privacy) | `0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0` |
+| StelaPrivacyPool | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` |
+| StelaProtocol (previous, privacy-enabled) | `0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5` |
+| StelaProtocol (v1) | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` |
 | Stela Inscriptions NFT | `0x04f2345306bf8ef1c8c1445661354ef08421aa092459445a5d6b46641237e943` |
 | MockRegistry (SNIP-14) | `0x0499c5c4929b22fbf1ebd8c500f570b2ec5bd8a43a84ee63e92bf8ac7f9f422b` |
 
-Declared class hash: `0x49ac186a5f9c92dcef69967cb1a000d634ab3892e90b6dff2d51d9580b1e827`
+Declared class hashes:
+- StelaProtocol: `0x0c41e4fe7fbfe82124c8fb94a9d64f99935f21128432aa4c051bb0172f2f0b6`
+- StelaPrivacyPool: `0x5621e5bf0edd07995afed0d26a93fe1070cf8900433b0f7402fb367dd3c0808`
 
 See `deployments/sepolia/deployedAddresses.json` for the full deployment manifest and `docs/deployment.md` for procedures.
 

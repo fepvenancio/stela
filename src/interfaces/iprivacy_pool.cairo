@@ -16,4 +16,20 @@ pub trait IPrivacyPool<TContractState> {
     fn private_redeem(
         ref self: TContractState, request: PrivateRedeemRequest, proof: Span<felt252>,
     );
+
+    /// Consume a deposit commitment for private settlement.
+    /// Verifies the deposit exists and marks it as consumed (one-time use).
+    /// Called by Stela core during settle() when the lender is anonymous.
+    fn consume_deposit(ref self: TContractState, commitment: felt252);
+
+    /// Pull deposited tokens from the privacy pool to a recipient.
+    /// Called by Stela core during private settlement to transfer the lender's
+    /// pre-deposited debt tokens to the borrower (and relayer fee to relayer).
+    /// The pool must have sufficient token balance from the lender's prior deposit.
+    fn pull_deposit_tokens(
+        ref self: TContractState,
+        token: starknet::ContractAddress,
+        recipient: starknet::ContractAddress,
+        amount: u256,
+    );
 }
