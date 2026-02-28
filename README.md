@@ -51,7 +51,7 @@ Requires [Scarb](https://docs.swmansion.com/scarb/download.html) and [StarkNet F
 
 ```bash
 scarb build          # Compile contracts
-snforge test         # Run all tests (81 tests)
+snforge test         # Run all tests (76 tests)
 ```
 
 ## Project Structure
