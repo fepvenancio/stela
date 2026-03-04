@@ -3,21 +3,36 @@
   "deployer": "0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310",
   "contracts": {
     "StelaProtocol": {
-      "address": "0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0",
-      "classHash": "0x0c41e4fe7fbfe82124c8fb94a9d64f99935f21128432aa4c051bb0172f2f0b6",
-      "relayerFee": "10 BPS",
+      "address": "0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973",
+      "classHash": "0x45ea8dd0b11788d25c09ba6e2c99d2e93545d2e3b6f8843727463a6561c0263",
+      "feeVault": "0x0111beaef1d9b13378b0dbf1be40c556ccf6886591f6b1b29ed790fa13606471",
       "privacyPool": "0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7",
-      "previousAddress": "0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5",
-      "previousClassHash": "0x49ac186a5f9c92dcef69967cb1a000d634ab3892e90b6dff2d51d9580b1e827"
+      "settleFee": "25 BPS (5 relayer + 20 vault)",
+      "redeemFee": "10 BPS (10 vault)",
+      "note": "Supply changed to 500 and fee split updated for mainnet redeployment",
+      "previousAddress": "0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0"
+    },
+    "StelaGenesis": {
+      "address": "0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3",
+      "classHash": "0x1b962798977d2c21232a18578f3c938c7c287283262f0ef76f0b8d27fd2620e",
+      "supply": 500,
+      "mintPrice": "5000 STRK",
+      "paymentToken": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
+    },
+    "FeeVault": {
+      "address": "0x0111beaef1d9b13378b0dbf1be40c556ccf6886591f6b1b29ed790fa13606471",
+      "classHash": "0xd69cc1c40ed037360b8d2afa261af55dafcdb3f786cb1b498d8e07f733845b",
+      "genesisNft": "0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3",
+      "totalNfts": 500
     },
     "StelaPrivacyPool": {
       "address": "0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7",
       "classHash": "0x5621e5bf0edd07995afed0d26a93fe1070cf8900433b0f7402fb367dd3c0808",
-      "stelaContract": "0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0",
+      "stelaContract": "0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973",
       "standbyPeriod": 0
     },
     "LockerAccount": {
-      "classHash": "0x1a42b6c860becbb16fa5cd936576b98bca8e2ce26c3e279705cdf328ad4e8a5",
+      "classHash": "0x12502d64c77788b2db180beeda2188579025ddf688989d2ede5a9ca9fe9a828",
       "note": "Declared only — deployed on-demand by MockRegistry when inscriptions are signed"
     },
     "MockERC721_StelaNFT": {

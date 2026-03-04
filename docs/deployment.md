@@ -226,12 +226,14 @@ unpause()  -- Resumes normal operation
 
 ## Contract Addresses (Sepolia)
 
+### Current Deployment (genesis-fee-vault)
+
 | Contract | Address |
 |---|---|
-| StelaProtocol (current, deposit-privacy) | `0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0` |
-| StelaPrivacyPool | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` |
-| StelaProtocol (previous, privacy-enabled) | `0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5` |
-| StelaProtocol (older) | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` |
+| **StelaProtocol** | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` |
+| **StelaGenesis NFT** | `0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3` |
+| **FeeVault** | `0x0111beaef1d9b13378b0dbf1be40c556ccf6886591f6b1b29ed790fa13606471` |
+| **StelaPrivacyPool** | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` |
 | LockerAccount (class hash) | `0x1a42b6c860becbb16fa5cd936576b98bca8e2ce26c3e279705cdf328ad4e8a5` |
 | Inscription NFT (MockERC721) | `0x04f2345306bf8ef1c8c1445661354ef08421aa092459445a5d6b46641237e943` |
 | SNIP-14 Registry (MockRegistry) | `0x0499c5c4929b22fbf1ebd8c500f570b2ec5bd8a43a84ee63e92bf8ac7f9f422b` |
@@ -241,7 +243,13 @@ unpause()  -- Resumes normal operation
 
 Deployer: `0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310`
 
-Update `@stela/core` (`packages/core/src/constants.ts`) with these addresses after deployment.
+### Previous Deployments (do not use)
+
+| Contract | Address | Tag |
+|---|---|---|
+| StelaProtocol | `0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0` | deposit-privacy |
+| StelaProtocol | `0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5` | privacy-enabled |
+| StelaProtocol | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` | original |
 
 ---
 
@@ -291,3 +299,69 @@ Update `@stela/core` (`packages/core/src/constants.ts`) with these addresses aft
 - **StelaProtocol** is not upgradeable. New deployment required for logic changes.
 - **LockerAccount** instances deployed via registry. Changing `implementation_hash` only affects new lockers.
 - **Configuration** (fees, treasury, registry, NFT, implementation hash, privacy pool) can be updated by owner without redeployment.
+
+---
+
+## CRITICAL: Full Stack Reset After Every New Deployment
+
+**Every new Stela contract deployment requires a FULL RESET of the entire off-chain stack.**
+This is NOT optional. Missing any step causes silent failures that are extremely hard to debug.
+
+### Why Everything Breaks
+
+1. **Nonces reset to 0** — New contract's NoncesComponent starts at 0 for all addresses.
+   Old orders in D1 reference consumed nonces (e.g., nonce=4). The bot's `expireStaleNonceOrders()`
+   sees the mismatch and immediately expires them. Server-side `verify-nonce.ts` also rejects them.
+
+2. **SNIP-12 domain changes** — Typed data signatures include the contract address in the domain.
+   Old signatures are invalid against the new contract even if the nonce matches.
+
+3. **On-chain data is gone** — Inscriptions, lockers, share balances on the old contract don't exist
+   on the new one. D1 data referencing old inscription IDs is orphaned.
+
+4. **Build caches bake in addresses** — Next.js bakes `NEXT_PUBLIC_*` env vars into both client
+   AND server bundles at build time. Turbo cache can serve stale builds even after source changes.
+
+### What Must Be Reset
+
+**See `stela-app/CLAUDE.md` for the complete step-by-step checklist.** Summary:
+
+| What | Where | Why |
+|------|-------|-----|
+| Contract address | 7 config files across stela-app repo | All services read from different places |
+| Contract address | stela-sdk-ts `constants.ts` | SDK is source of truth |
+| ABI | `packages/core/src/abi/stela.json` + SDK | New entrypoints/events |
+| D1 orders + offers | `DELETE FROM order_offers; DELETE FROM orders` | Signed against old contract |
+| D1 inscriptions + events | `DELETE FROM inscription_events, inscription_assets, ...` | Old contract data |
+| D1 indexer cursor | `DELETE FROM _meta WHERE key='last_block'` | Re-index from block 0 |
+| D1 bot lock | `DELETE FROM _meta WHERE key='bot_lock'` | Prevent stuck lock |
+| Next.js build cache | `rm -rf .next .open-next .turbo node_modules/.cache` | Baked-in old addresses |
+| Web app | `pnpm run deploy` from `apps/web/` | NOT just `pnpm build` |
+| Bot worker | `npx wrangler@3 deploy` from `workers/bot/` | New contract address |
+| Indexer worker | `npx wrangler@3 deploy` from `workers/indexer/` | New contract address |
+| Railway Apibara indexer | Update `STELA_ADDRESS` env var + redeploy | New contract address |
+
+### Post-Deployment Wiring
+
+After deploying a new Stela contract, call these admin functions from the `starkMfer` account:
+
+```bash
+# 1. Link fee vault (enables Genesis fee distribution)
+sncast --account starkMfer invoke \
+  --contract-address <NEW_STELA_ADDRESS> \
+  --function set_fee_vault \
+  --arguments <FEE_VAULT_ADDRESS>
+
+# 2. Link privacy pool (enables private lending)
+sncast --account starkMfer invoke \
+  --contract-address <NEW_STELA_ADDRESS> \
+  --function set_privacy_pool \
+  --arguments <PRIVACY_POOL_ADDRESS>
+
+# 3. Verify everything
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_fee_vault
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_privacy_pool
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_inscription_fee
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_relayer_fee
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_treasury
+```

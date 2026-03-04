@@ -754,3 +754,63 @@ pnpm sync-abi      # if contracts changed
 ```
 
 TypeScript strict mode is non-negotiable. No `any`. No `ts-ignore` without a comment explaining why.
+
+---
+
+## Genesis NFT System
+
+Three contracts form the Genesis fee distribution system:
+
+### StelaGenesis (`src/genesis.cairo`)
+
+ERC721 mint contract. 500 max supply, sequential IDs 1-500. Payment in STRK (5,000 STRK per mint, 18 decimals). Starts with minting disabled; owner calls `set_mint_enabled(true)` to open.
+
+**Interface (`IStelaGenesis`):**
+- `mint()` / `mint_batch(quantity)` — public mint (max 5 per batch)
+- `total_minted()`, `max_supply()`, `mint_price()`, `mint_enabled()`, `payment_token()`, `mint_recipient()` — views
+- `set_mint_price()`, `set_mint_enabled()`, `set_mint_recipient()`, `set_base_uri()` — admin (owner only)
+- `admin_mint(to, quantity)` — owner mint without payment (reserves/airdrops)
+- `pause()` / `unpause()` — emergency controls
+
+**Events:** `Minted(token_id, minter, price)`
+
+### FeeVault (`src/fee_vault.cairo`)
+
+Multi-token fee distribution using cumulative sum pattern (GMX/Synthetix style). Each ERC20 has an independent cumulative counter. All 500 NFTs have equal weight. Dust from integer division (up to 499 wei per token) is accumulated and rolled into the next deposit.
+
+**Interface (`IFeeVault`):**
+- `deposit(token, amount)` — deposit fees for distribution (called by Stela contract during settle/redeem). Auto-registers new tokens.
+- `claim(token_id)` — claim all tokens for one NFT. Caller must be NFT owner.
+- `claim_token(token_id, token)` — claim single token for one NFT
+- `claim_batch(token_ids)` — claim all tokens for multiple NFTs in one tx
+- `claimable(token_id, token)`, `claimable_all(token_id)` — view pending rewards
+- `cumulative_per_nft(token)`, `get_fee_tokens()`, `get_genesis_nft()` — views
+- `register_token(token)`, `set_genesis_nft(genesis_nft)` — admin (owner only)
+
+**Events:** `Deposited(token, amount, per_nft)`, `Claimed(token_id, token, amount, recipient)`, `TokenRegistered(token, index)`
+
+### Fee Split Constants in `src/stela.cairo`
+
+```
+SETTLE_FEE_BPS    = 25  (total fee on settle: 0.25%)
+SETTLE_RELAYER_BPS = 5  (relayer/bot compensation)
+SETTLE_VAULT_BPS  = 20  (genesis vault: 80% of settle fee)
+
+REDEEM_FEE_BPS    = 10  (total fee on redeem: 0.1%)
+REDEEM_VAULT_BPS  = 10  (genesis vault: 100% of redeem fee)
+```
+
+Treasury is set to the FeeVault address — no individual receives protocol revenue. 100% of non-relayer fees go to Genesis NFT holders.
+
+LIQUIDATE: no extra fee. When `fee_vault == zero_address`, all Genesis fee logic is skipped (backwards compatible).
+
+**New admin functions on Stela contract:**
+- `set_fee_vault(fee_vault)` — set vault address (zero disables fees)
+- `get_fee_vault()` — read current vault address
+
+### Deployment Order
+
+1. Deploy **StelaGenesis** (owner, STRK token address, mint recipient, base URI)
+2. Deploy **FeeVault** (owner, StelaGenesis address, total_nfts=500)
+3. Call `stela.set_fee_vault(vault_address)` on the Stela contract
+4. Call `genesis.set_mint_enabled(true)` to open minting

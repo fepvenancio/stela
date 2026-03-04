@@ -157,6 +157,12 @@ pub trait IStelaProtocol<TContractState> {
     /// Set the privacy pool contract address. Only owner.
     fn set_privacy_pool(ref self: TContractState, privacy_pool: ContractAddress);
 
+    /// Set the Genesis fee vault address. Zero address disables Genesis fee splitting. Only owner.
+    fn set_fee_vault(ref self: TContractState, fee_vault: ContractAddress);
+
+    /// Get the Genesis fee vault address.
+    fn get_fee_vault(self: @TContractState) -> ContractAddress;
+
     /// Pause the protocol. Only owner.
     fn pause(ref self: TContractState);
 

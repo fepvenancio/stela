@@ -11,6 +11,7 @@ pub mod StelaProtocol {
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
     use openzeppelin_utils::cryptography::nonces::NoncesComponent;
     use openzeppelin_utils::cryptography::snip12::{OffchainMessageHash, StructHash};
+    use crate::interfaces::ifee_vault::{IFeeVaultDispatcher, IFeeVaultDispatcherTrait};
     use crate::interfaces::iprivacy_pool::{IPrivacyPoolDispatcher, IPrivacyPoolDispatcherTrait};
     use crate::snip12::{InscriptionOrder, LendOffer, hash_assets};
     use crate::types::private_redeem::PrivateRedeemRequest;
@@ -41,6 +42,15 @@ pub mod StelaProtocol {
 
     /// Maximum number of assets per type (debt, interest, collateral) in a single inscription.
     const MAX_ASSETS: u32 = 10;
+
+    // Genesis fee split constants (in BPS)
+    const SETTLE_FEE_BPS: u256 = 25;       // Total fee on settle (5 + 20)
+    const SETTLE_RELAYER_BPS: u256 = 5;     // Relayer portion of settle fee
+    const SETTLE_VAULT_BPS: u256 = 20;      // Genesis vault portion of settle fee
+    const SETTLE_TREASURY_BPS: u256 = 0;    // Treasury = FeeVault (no separate split)
+    const REDEEM_FEE_BPS: u256 = 10;        // Total fee on redeem (10)
+    const REDEEM_VAULT_BPS: u256 = 10;      // Genesis vault portion of redeem fee
+    const REDEEM_TREASURY_BPS: u256 = 0;    // Treasury = FeeVault (no separate split)
 
     // Component declarations
     component!(path: ERC1155Component, storage: erc1155, event: ERC1155Event);
@@ -120,6 +130,8 @@ pub mod StelaProtocol {
         maker_min_nonce: Map<ContractAddress, felt252>,
         // Privacy pool
         privacy_pool: ContractAddress,
+        // Genesis fee vault
+        fee_vault: ContractAddress,
     }
 
     // ============================================================
@@ -1169,6 +1181,18 @@ pub mod StelaProtocol {
             self.privacy_pool.write(privacy_pool);
         }
 
+        /// Set the Genesis fee vault address. Zero address disables Genesis fee splitting.
+        /// Only owner.
+        fn set_fee_vault(ref self: ContractState, fee_vault: ContractAddress) {
+            self.ownable.assert_only_owner();
+            self.fee_vault.write(fee_vault);
+        }
+
+        /// Get the Genesis fee vault address.
+        fn get_fee_vault(self: @ContractState) -> ContractAddress {
+            self.fee_vault.read()
+        }
+
         /// Pause the protocol, blocking all state-changing operations. Only owner.
         fn pause(ref self: ContractState) {
             self.ownable.assert_only_owner();
@@ -1586,11 +1610,11 @@ pub mod StelaProtocol {
             };
         }
 
-        /// Issue debt from lender to borrower with relayer fee deduction.
-        /// Instead of transferring full debt to borrower and then pulling fee from borrower
-        /// (which would revert — borrower never approved the contract), this deducts the
-        /// relayer fee from the lender's transfer and sends it directly to the relayer.
-        /// Returns the total fee amount across all debt assets.
+        /// Issue debt from lender to borrower with fee deduction.
+        /// When fee_vault is set (Genesis mode), the fee is split 2 ways:
+        ///   relayer (5 BPS) + vault (20 BPS) = 25 BPS total.
+        /// When fee_vault is zero (legacy mode), only the relayer fee is applied.
+        /// Returns the total relayer fee amount across all debt assets.
         fn _issue_debt_with_fee(
             ref self: ContractState,
             from: ContractAddress,
@@ -1601,34 +1625,63 @@ pub mod StelaProtocol {
             percentage: u256,
             relayer_fee_bps: u256,
         ) -> u256 {
+            let vault_addr = self.fee_vault.read();
+            let has_vault = !vault_addr.is_zero();
+
             let mut total_fee: u256 = 0;
             let mut i: u32 = 0;
             while i < debt_count {
                 let asset = self.inscription_debt_assets.read((inscription_id, i));
                 let total_amount = scale_by_percentage(asset.value, percentage);
-                // M3: Integer division intentionally rounds DOWN (floor). This means the
-                // relayer fee is rounded in the borrower's favor — they receive slightly
-                // more, the relayer slightly less. This is acceptable: rounding up could
-                // cause net_amount to underflow if total_amount is very small, and the
-                // fee beneficiary (relayer) should not extract more than the exact BPS rate.
-                let fee_amount = if relayer_fee_bps > 0 {
-                    (total_amount * relayer_fee_bps) / MAX_BPS
-                } else {
-                    0
-                };
-                let net_amount = total_amount - fee_amount;
 
                 let erc20 = IERC20Dispatcher { contract_address: asset.asset };
 
-                // Transfer net amount: lender -> borrower
-                if net_amount > 0 {
-                    erc20.transfer_from(from, to, net_amount);
-                }
+                if has_vault {
+                    // Genesis fee model: 25 BPS total split two ways (relayer + vault).
+                    // M3: Integer division intentionally rounds DOWN (floor) — borrower-favorable.
+                    let relayer_amount = (total_amount * SETTLE_RELAYER_BPS) / MAX_BPS;
+                    let vault_amount = (total_amount * SETTLE_VAULT_BPS) / MAX_BPS;
+                    let total_fee_amount = relayer_amount + vault_amount;
+                    let net_amount = total_amount - total_fee_amount;
 
-                // Transfer fee: lender -> relayer
-                if fee_amount > 0 {
-                    erc20.transfer_from(from, relayer, fee_amount);
-                    total_fee = total_fee + fee_amount;
+                    // Transfer net amount: lender -> borrower
+                    if net_amount > 0 {
+                        erc20.transfer_from(from, to, net_amount);
+                    }
+
+                    // Transfer relayer fee: lender -> relayer
+                    if relayer_amount > 0 {
+                        erc20.transfer_from(from, relayer, relayer_amount);
+                        total_fee = total_fee + relayer_amount;
+                    }
+
+                    // Transfer vault fee: lender -> this contract -> FeeVault
+                    if vault_amount > 0 {
+                        erc20.transfer_from(from, get_contract_address(), vault_amount);
+                        erc20.approve(vault_addr, vault_amount);
+                        let vault = IFeeVaultDispatcher { contract_address: vault_addr };
+                        vault.deposit(asset.asset, vault_amount);
+                    }
+                } else {
+                    // Legacy behavior: only relayer fee
+                    // M3: Integer division intentionally rounds DOWN (floor) — borrower-favorable.
+                    let fee_amount = if relayer_fee_bps > 0 {
+                        (total_amount * relayer_fee_bps) / MAX_BPS
+                    } else {
+                        0
+                    };
+                    let net_amount = total_amount - fee_amount;
+
+                    // Transfer net amount: lender -> borrower
+                    if net_amount > 0 {
+                        erc20.transfer_from(from, to, net_amount);
+                    }
+
+                    // Transfer fee: lender -> relayer
+                    if fee_amount > 0 {
+                        erc20.transfer_from(from, relayer, fee_amount);
+                        total_fee = total_fee + fee_amount;
+                    }
                 }
 
                 i += 1;
@@ -1636,10 +1689,11 @@ pub mod StelaProtocol {
             total_fee
         }
 
-        /// Issue debt from privacy pool to borrower with relayer fee deduction.
-        /// Instead of transfer_from(lender), calls pull_deposit_tokens on the privacy pool
-        /// to transfer pre-deposited tokens to the borrower and relayer.
-        /// Returns the total fee amount across all debt assets.
+        /// Issue debt from privacy pool to borrower with fee deduction.
+        /// When fee_vault is set (Genesis mode), the fee is split 2 ways:
+        ///   relayer (5 BPS) + vault (20 BPS) = 25 BPS total.
+        /// When fee_vault is zero (legacy mode), only the relayer fee is applied.
+        /// Returns the total relayer fee amount across all debt assets.
         fn _issue_debt_from_pool(
             ref self: ContractState,
             pool_address: ContractAddress,
@@ -1651,27 +1705,60 @@ pub mod StelaProtocol {
             relayer_fee_bps: u256,
         ) -> u256 {
             let pool = IPrivacyPoolDispatcher { contract_address: pool_address };
+            let vault_addr = self.fee_vault.read();
+            let has_vault = !vault_addr.is_zero();
+
             let mut total_fee: u256 = 0;
             let mut i: u32 = 0;
             while i < debt_count {
                 let asset = self.inscription_debt_assets.read((inscription_id, i));
                 let total_amount = scale_by_percentage(asset.value, percentage);
-                let fee_amount = if relayer_fee_bps > 0 {
-                    (total_amount * relayer_fee_bps) / MAX_BPS
+
+                if has_vault {
+                    // Genesis fee model: 25 BPS total split two ways (relayer + vault).
+                    let relayer_amount = (total_amount * SETTLE_RELAYER_BPS) / MAX_BPS;
+                    let vault_amount = (total_amount * SETTLE_VAULT_BPS) / MAX_BPS;
+                    let total_fee_amount = relayer_amount + vault_amount;
+                    let net_amount = total_amount - total_fee_amount;
+
+                    // Pull net amount: pool -> borrower
+                    if net_amount > 0 {
+                        pool.pull_deposit_tokens(asset.asset, to, net_amount);
+                    }
+
+                    // Pull relayer fee: pool -> relayer
+                    if relayer_amount > 0 {
+                        pool.pull_deposit_tokens(asset.asset, relayer, relayer_amount);
+                        total_fee = total_fee + relayer_amount;
+                    }
+
+                    // Pull vault fee: pool -> this contract -> FeeVault
+                    if vault_amount > 0 {
+                        pool.pull_deposit_tokens(asset.asset, get_contract_address(), vault_amount);
+                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                        erc20.approve(vault_addr, vault_amount);
+                        let vault = IFeeVaultDispatcher { contract_address: vault_addr };
+                        vault.deposit(asset.asset, vault_amount);
+                    }
                 } else {
-                    0
-                };
-                let net_amount = total_amount - fee_amount;
+                    // Legacy behavior: only relayer fee
+                    let fee_amount = if relayer_fee_bps > 0 {
+                        (total_amount * relayer_fee_bps) / MAX_BPS
+                    } else {
+                        0
+                    };
+                    let net_amount = total_amount - fee_amount;
 
-                // Pull net amount: pool -> borrower
-                if net_amount > 0 {
-                    pool.pull_deposit_tokens(asset.asset, to, net_amount);
-                }
+                    // Pull net amount: pool -> borrower
+                    if net_amount > 0 {
+                        pool.pull_deposit_tokens(asset.asset, to, net_amount);
+                    }
 
-                // Pull fee: pool -> relayer
-                if fee_amount > 0 {
-                    pool.pull_deposit_tokens(asset.asset, relayer, fee_amount);
-                    total_fee = total_fee + fee_amount;
+                    // Pull fee: pool -> relayer
+                    if fee_amount > 0 {
+                        pool.pull_deposit_tokens(asset.asset, relayer, fee_amount);
+                        total_fee = total_fee + fee_amount;
+                    }
                 }
 
                 i += 1;
@@ -1768,6 +1855,34 @@ pub mod StelaProtocol {
             locker_dispatcher.pull_assets(assets);
         }
 
+        /// Apply Genesis redeem fee to an ERC20/ERC4626 amount.
+        /// When fee_vault is set, deducts REDEEM_FEE_BPS (10 BPS) routed entirely to the vault.
+        /// When fee_vault is zero, returns the full gross_amount unchanged.
+        /// The contract must already hold the tokens (they come from tracked balances).
+        fn _apply_redeem_fee(
+            ref self: ContractState,
+            asset_address: ContractAddress,
+            gross_amount: u256,
+        ) -> u256 {
+            let vault_addr = self.fee_vault.read();
+            if vault_addr.is_zero() || gross_amount == 0 {
+                return gross_amount;
+            }
+
+            let vault_amount = (gross_amount * REDEEM_VAULT_BPS) / MAX_BPS;
+            let net_amount = gross_amount - vault_amount;
+
+            // Deposit fee via IFeeVault.deposit()
+            if vault_amount > 0 {
+                let erc20 = IERC20Dispatcher { contract_address: asset_address };
+                erc20.approve(vault_addr, vault_amount);
+                let vault = IFeeVaultDispatcher { contract_address: vault_addr };
+                vault.deposit(asset_address, vault_amount);
+            }
+
+            net_amount
+        }
+
         /// Redeem debt assets using tracked per-inscription balances.
         /// Uses pro-rata: amount = tracked_balance * shares / total_supply.
         ///
@@ -1791,12 +1906,17 @@ pub mod StelaProtocol {
                 let amount = tracked_balance * shares / total_supply;
 
                 if amount > 0 {
-                    // Debit from tracked balance
+                    // Debit from tracked balance (full amount, before fee)
                     self.inscription_debt_balance.write((inscription_id, i), tracked_balance - amount);
 
-                    // Transfer from contract to redeemer
-                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                    erc20.transfer(to, amount);
+                    // Apply Genesis redeem fee (only affects ERC20/ERC4626 debt assets)
+                    let net_amount = self._apply_redeem_fee(asset.asset, amount);
+
+                    // Transfer net amount from contract to redeemer
+                    if net_amount > 0 {
+                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                        erc20.transfer(to, net_amount);
+                    }
                 }
 
                 i += 1;
@@ -1823,12 +1943,17 @@ pub mod StelaProtocol {
                 let amount = tracked_balance * shares / total_supply;
 
                 if amount > 0 {
-                    // Debit from tracked balance
+                    // Debit from tracked balance (full amount, before fee)
                     self.inscription_interest_balance.write((inscription_id, i), tracked_balance - amount);
 
-                    // Transfer from contract to redeemer
-                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                    erc20.transfer(to, amount);
+                    // Apply Genesis redeem fee (only affects ERC20/ERC4626 interest assets)
+                    let net_amount = self._apply_redeem_fee(asset.asset, amount);
+
+                    // Transfer net amount from contract to redeemer
+                    if net_amount > 0 {
+                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                        erc20.transfer(to, net_amount);
+                    }
                 }
 
                 i += 1;
@@ -1857,10 +1982,7 @@ pub mod StelaProtocol {
                 match asset.asset_type {
                     AssetType::ERC721 => {
                         // KNOWN LIMITATION: NFTs can't be split — only full redemption.
-                        // In multi-lender liquidation, the first redeemer with ANY shares
-                        // gets the entire NFT regardless of share size. This is inherent to
-                        // NFT indivisibility. Users should avoid NFT collateral + multi-lender
-                        // unless they accept this first-come-first-served behavior.
+                        // No redeem fee for ERC721 (indivisible).
                         if tracked_balance > 0 {
                             self.inscription_collateral_balance.write((inscription_id, i), 0);
                             let erc721 = IERC721Dispatcher { contract_address: asset.asset };
@@ -1870,20 +1992,24 @@ pub mod StelaProtocol {
                     _ => {
                         let amount = tracked_balance * shares / total_supply;
                         if amount > 0 {
-                            // Debit from tracked balance
+                            // Debit from tracked balance (full amount, before fee)
                             self.inscription_collateral_balance.write((inscription_id, i), tracked_balance - amount);
 
                             // Transfer based on asset type
                             match asset.asset_type {
                                 AssetType::ERC1155 => {
+                                    // No redeem fee for ERC1155 (can't extract ERC20 fee from ERC1155)
                                     let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
                                     erc1155
                                         .safe_transfer_from(this_contract, to, asset.token_id, amount, array![].span());
                                 },
                                 _ => {
-                                    // ERC20 and ERC4626
-                                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                                    erc20.transfer(to, amount);
+                                    // ERC20 and ERC4626: apply Genesis redeem fee
+                                    let net_amount = self._apply_redeem_fee(asset.asset, amount);
+                                    if net_amount > 0 {
+                                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                                        erc20.transfer(to, net_amount);
+                                    }
                                 },
                             }
                         }
