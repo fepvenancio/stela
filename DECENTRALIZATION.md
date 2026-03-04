@@ -20,7 +20,7 @@ All three Stela protocol contracts have permanently renounced admin ownership vi
 ### Stela Protocol
 - `pause() / unpause()` — protocol cannot be paused
 - `set_relayer_fee()` — locked at 10 BPS
-- `set_treasury()` — locked at current treasury address
+- `set_treasury()` — locked at FeeVault address (all non-relayer fees go to Genesis NFT holders)
 - `set_privacy_pool()` — no privacy pool linked (Sepolia; will redeploy for mainnet)
 - `set_fee_vault()` — locked at current FeeVault address
 - `set_inscription_fee()` — locked at current value
@@ -48,6 +48,16 @@ All user-facing functions require NO special permissions:
 | `create_inscription()` | Any user | Creates on-chain lending inscription |
 | `sign_inscription()` | Any user | Signs/funds an inscription |
 | `repay()` | Borrower | Repays a loan |
+
+## Fee Distribution
+
+The treasury address is set to the FeeVault contract. This means **no individual or entity receives protocol revenue** — 100% of non-relayer fees are distributed to Genesis NFT holders.
+
+| Event | Total | Relayer | Genesis Vault |
+|-------|-------|---------|---------------|
+| Settlement | 25 BPS | 5 BPS | 20 BPS |
+| Redemption | 10 BPS | 0 BPS | 10 BPS |
+| Liquidation | 0 BPS | 0 BPS | 0 BPS |
 
 ## Running a Relayer
 
