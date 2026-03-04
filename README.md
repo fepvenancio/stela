@@ -107,9 +107,9 @@ The contract composes several OpenZeppelin Cairo components:
 | Component | Purpose |
 |-----------|---------|
 | `ERC1155Component` | Lender share tokens (minted on sign, burned on redeem) |
-| `OwnableComponent` | Admin access control (fee setting, pausing, etc.) |
+| `OwnableComponent` | Admin access control (ownership renounced — all admin functions permanently locked) |
 | `NoncesComponent` | Replay protection for off-chain SNIP-12 signatures |
-| `PausableComponent` | Emergency pause for all state-mutating functions |
+| `PausableComponent` | Emergency pause (permanently unpaused — ownership renounced) |
 | `ReentrancyGuardComponent` | Reentrancy protection on all external calls |
 | `SRC5Component` | Interface detection (ERC-165 equivalent) |
 
@@ -170,20 +170,16 @@ starkli deploy <CLASS_HASH> <OWNER_ADDRESS> \
   --keystore ~/.starkli-wallets/deployer/keystore.json
 ```
 
-### Deployed Contracts (Sepolia)
+### Deployed Contracts (Sepolia) — Ownership Renounced
 
-| Contract | Address |
-|----------|---------|
-| StelaProtocol (current, deposit-privacy) | `0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0` |
-| StelaPrivacyPool | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` |
-| StelaProtocol (previous, privacy-enabled) | `0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5` |
-| StelaProtocol (v1) | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` |
-| Stela Inscriptions NFT | `0x04f2345306bf8ef1c8c1445661354ef08421aa092459445a5d6b46641237e943` |
-| MockRegistry (SNIP-14) | `0x0499c5c4929b22fbf1ebd8c500f570b2ec5bd8a43a84ee63e92bf8ac7f9f422b` |
+All contracts have permanently renounced admin ownership. See [DECENTRALIZATION.md](DECENTRALIZATION.md) for details.
 
-Declared class hashes:
-- StelaProtocol: `0x0c41e4fe7fbfe82124c8fb94a9d64f99935f21128432aa4c051bb0172f2f0b6`
-- StelaPrivacyPool: `0x5621e5bf0edd07995afed0d26a93fe1070cf8900433b0f7402fb367dd3c0808`
+| Contract | Address | Owner |
+|----------|---------|-------|
+| StelaProtocol | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` | `0x0` (renounced) |
+| StelaGenesis NFT | `0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3` | `0x0` (renounced) |
+| FeeVault | `0x0111beaef1d9b13378b0dbf1be40c556ccf6886591f6b1b29ed790fa13606471` | `0x0` (renounced) |
+| StelaPrivacyPool | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` | Not linked |
 
 See `deployments/sepolia/deployedAddresses.json` for the full deployment manifest and `docs/deployment.md` for procedures.
 
@@ -210,8 +206,13 @@ See `docs/security.md` for the full threat model and `docs/SPEC.md` for known li
 - OpenZeppelin Cairo utils `2.1.0`
 - snforge_std `0.56.0` (dev)
 
+## Running a Relayer
+
+The protocol is fully permissionless. Anyone can run a relayer to settle matched orders and earn **5 BPS** on every settlement. See the [stela-relayer](https://github.com/fepvenancio/stela-relayer) repo for a standalone implementation.
+
 ## Related Repositories
 
+- **[stela-relayer](https://github.com/fepvenancio/stela-relayer)** — Standalone relayer for settling matched orders (earn 5 BPS)
 - **[stela-sdk-ts](https://github.com/fepvenancio/stela-sdk-ts)** — TypeScript SDK for interacting with Stela contracts
 - **[stela-app](https://github.com/fepvenancio/stela-app)** — Next.js frontend, indexer, and settlement bot
 - **[stela-privacy](https://github.com/fepvenancio/stela-privacy)** — Privacy pool contract (Merkle tree, nullifier store, ZK verifier)
