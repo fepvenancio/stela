@@ -123,7 +123,6 @@ fn deploy_fee_split_setup() -> FeeSplitSetup {
     nft_address.serialize(ref stela_calldata);
     TREASURY().serialize(ref stela_calldata); // placeholder registry
     stela_calldata.append(locker_class_hash);
-    OWNER().serialize(ref stela_calldata); // pauser
     let (stela_address, _) = stela_contract.deploy(@stela_calldata).unwrap();
     let stela = IStelaProtocolDispatcher { contract_address: stela_address };
 
@@ -172,15 +171,8 @@ fn deploy_fee_split_setup() -> FeeSplitSetup {
     genesis_address.serialize(ref vault_calldata);
     let total_nfts: u256 = 500;
     total_nfts.serialize(ref vault_calldata);
-    stela_address.serialize(ref vault_calldata); // authorized depositor
     let (vault_address, _) = vault_class.deploy(@vault_calldata).unwrap();
     let vault = IFeeVaultDispatcher { contract_address: vault_address };
-
-    // Pre-register fee tokens on vault (deposit no longer auto-registers)
-    start_cheat_caller_address(vault_address, OWNER());
-    vault.register_token(debt_token_address);
-    vault.register_token(interest_token_address);
-    stop_cheat_caller_address(vault_address);
 
     // Set fee vault on Stela
     start_cheat_caller_address(stela_address, OWNER());
@@ -703,11 +695,6 @@ fn test_settle_multiple_debt_assets() {
 
     // Deploy second debt token
     let (debt2_address, debt2_token) = deploy_erc20("Debt Token 2", "DEBT2");
-
-    // Pre-register second debt token on vault
-    start_cheat_caller_address(setup.vault_address, OWNER());
-    setup.vault.register_token(debt2_address);
-    stop_cheat_caller_address(setup.vault_address);
 
     // Fund borrower collateral
     setup.collateral_token.mint(setup.borrower_account, collateral_amount);

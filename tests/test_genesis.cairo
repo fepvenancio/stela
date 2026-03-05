@@ -40,7 +40,7 @@ fn deploy_genesis_setup() -> (ContractAddress, IStelaGenesisDispatcher, Contract
     OWNER().serialize(ref genesis_calldata);
     token_address.serialize(ref genesis_calldata);
     TREASURY().serialize(ref genesis_calldata); // mint_recipient
-    TREASURY().serialize(ref genesis_calldata); // treasury (receives 100 reserve NFTs)
+    TREASURY().serialize(ref genesis_calldata); // treasury (receives 50 reserve NFTs)
     let base_uri: ByteArray = "https://api.stela.xyz/genesis/";
     base_uri.serialize(ref genesis_calldata);
     let (genesis_address, _) = genesis_class.deploy(@genesis_calldata).unwrap();
@@ -71,9 +71,9 @@ fn setup_minter(
 fn test_genesis_constructor() {
     let (_, genesis, token_address, _) = deploy_genesis_setup();
 
-    assert(genesis.total_minted() == 100, 'total_minted should be 100');
-    assert(genesis.max_supply() == 500, 'max_supply should be 500');
-    assert(genesis.mint_price() == 5_000_000_000_000_000_000_000, 'price should be 5000 STRK');
+    assert(genesis.total_minted() == 50, 'total_minted should be 50');
+    assert(genesis.max_supply() == 300, 'max_supply should be 300');
+    assert(genesis.mint_price() == 1_000_000_000_000_000_000_000, 'price should be 1000 STRK');
     assert(genesis.mint_enabled() == false, 'mint should be disabled');
     assert(genesis.payment_token() == token_address, 'wrong payment token');
     assert(genesis.mint_recipient() == TREASURY(), 'wrong mint recipient');
@@ -83,12 +83,12 @@ fn test_genesis_constructor() {
 fn test_treasury_reserve_minted_on_deploy() {
     let (_, genesis, _, token) = deploy_genesis_setup();
 
-    // 100 NFTs minted to treasury on deployment, no payment taken
-    assert(genesis.total_minted() == 100, 'treasury should have 100');
+    // 50 NFTs minted to treasury on deployment, no payment taken
+    assert(genesis.total_minted() == 50, 'treasury should have 50');
     assert(token.balance_of(TREASURY()) == 0, 'no payment for reserve');
-    // 400 remaining for public mint
+    // 250 remaining for public mint
     let remaining = genesis.max_supply() - genesis.total_minted();
-    assert(remaining == 400, 'should have 400 remaining');
+    assert(remaining == 250, 'should have 250 remaining');
 }
 
 // ============================================================
@@ -114,7 +114,7 @@ fn test_mint_single() {
     stop_cheat_caller_address(genesis_address);
 
     // Verify
-    assert(genesis.total_minted() == 101, 'should have minted 101');
+    assert(genesis.total_minted() == 51, 'should have minted 51');
     // Payment should have been transferred
     assert(token.balance_of(MINTER()) == 0, 'minter balance should be 0');
     assert(token.balance_of(TREASURY()) == price, 'treasury should have payment');
@@ -138,7 +138,7 @@ fn test_mint_batch() {
     genesis.mint_batch(3);
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 103, 'should have minted 103');
+    assert(genesis.total_minted() == 53, 'should have minted 53');
     assert(token.balance_of(MINTER()) == 0, 'minter should have 0');
     assert(token.balance_of(TREASURY()) == price * 3, 'treasury should have 3x price');
 }
@@ -166,11 +166,8 @@ fn test_mint_sequential_ids() {
     genesis.mint();
     stop_cheat_caller_address(genesis_address);
 
-    // IDs should be 101, 102, 103 (after 100 treasury reserve)
-    assert(genesis.total_minted() == 103, 'should have minted 103');
-    // We can verify via ERC721 owner_of through the dispatcher
-    // (ERC721 functions are exposed via the mixin, but we'd need the ERC721 ABI)
-    // For now, just verify total_minted is correct
+    // IDs should be 51, 52, 53 (after 50 treasury reserve)
+    assert(genesis.total_minted() == 53, 'should have minted 53');
 }
 
 #[test]
@@ -225,7 +222,7 @@ fn test_admin_mint() {
     genesis.admin_mint(MINTER(), 10);
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 110, 'should have minted 110');
+    assert(genesis.total_minted() == 60, 'should have minted 60');
     // No payment should have been taken
     assert(token.balance_of(TREASURY()) == 0, 'treasury should have 0');
 }
@@ -245,7 +242,7 @@ fn test_admin_mint_exceeds_remaining_reverts() {
     let (genesis_address, genesis, _, _) = deploy_genesis_setup();
 
     start_cheat_caller_address(genesis_address, OWNER());
-    genesis.admin_mint(MINTER(), 401); // 100 treasury + 401 = 501 > 500
+    genesis.admin_mint(MINTER(), 251); // 50 treasury + 251 = 301 > 300
 }
 
 #[test]
@@ -257,7 +254,7 @@ fn test_admin_mint_no_batch_limit() {
     genesis.admin_mint(MINTER(), 50);
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 150, 'should have minted 150');
+    assert(genesis.total_minted() == 100, 'should have minted 100');
 }
 
 // ============================================================
@@ -280,7 +277,7 @@ fn test_wallet_limit_single_mint() {
     genesis.mint_batch(5);
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 105, 'should have minted 105');
+    assert(genesis.total_minted() == 55, 'should have minted 55');
 }
 
 #[test]
@@ -326,7 +323,7 @@ fn test_admin_mint_bypasses_wallet_limit() {
     genesis.admin_mint(MINTER(), 50);
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 150, 'should have minted 150');
+    assert(genesis.total_minted() == 100, 'should have minted 100');
 }
 
 #[test]
@@ -343,22 +340,18 @@ fn test_max_per_wallet_view() {
 fn test_sold_out_at_max_supply() {
     let (genesis_address, genesis, _, _) = deploy_genesis_setup();
 
-    // Verify max_supply is 500
-    assert(genesis.max_supply() == 500, 'max supply is 500');
+    // Verify max_supply is 300
+    assert(genesis.max_supply() == 300, 'max supply is 300');
 
-    // 100 already minted to treasury on deploy
-    assert(genesis.total_minted() == 100, 'should start at 100');
+    // 50 already minted to treasury on deploy
+    assert(genesis.total_minted() == 50, 'should start at 50');
 
     // Mint a small batch and verify counter works
     start_cheat_caller_address(genesis_address, OWNER());
     genesis.admin_mint(MINTER(), 10);
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 110, 'should have minted 110');
-
-    // Verify we can't exceed max_supply (try to mint 491 — would exceed 500)
-    // This is tested in test_admin_mint_exceeds_remaining_reverts
-    // Here we just verify the supply constant is correct
+    assert(genesis.total_minted() == 60, 'should have minted 60');
 }
 
 #[test]
@@ -366,10 +359,10 @@ fn test_sold_out_at_max_supply() {
 fn test_mint_after_sold_out_reverts() {
     let (genesis_address, genesis, _, _) = deploy_genesis_setup();
 
-    // 100 treasury + 50 + 351 = 501 > 500
+    // 50 treasury + 50 + 201 = 301 > 300
     start_cheat_caller_address(genesis_address, OWNER());
     genesis.admin_mint(MINTER(), 50);
-    genesis.admin_mint(MINTER(), 351); // should panic: exceeds remaining
+    genesis.admin_mint(MINTER(), 201); // should panic: exceeds remaining
 }
 
 // ============================================================
@@ -442,7 +435,6 @@ fn test_set_base_uri() {
     start_cheat_caller_address(genesis_address, OWNER());
     genesis.set_base_uri("https://new-uri.stela.xyz/");
     stop_cheat_caller_address(genesis_address);
-    // No direct getter for base_uri, but this verifies it doesn't revert
 }
 
 // ============================================================
@@ -464,6 +456,6 @@ fn test_free_mint_when_price_is_zero() {
     genesis.mint();
     stop_cheat_caller_address(genesis_address);
 
-    assert(genesis.total_minted() == 101, 'should have minted 101');
+    assert(genesis.total_minted() == 51, 'should have minted 51');
     assert(token.balance_of(TREASURY()) == 0, 'no payment should transfer');
 }

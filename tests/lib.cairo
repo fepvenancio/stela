@@ -1,14 +1,11 @@
 mod mocks;
 mod test_create_inscription;
 mod test_e2e;
-mod test_fee_split;
-mod test_fee_vault;
 mod test_genesis;
 mod test_hash_compat;
 mod test_liquidate;
 mod test_multi_lender;
 mod test_otc_swap;
-mod test_private_settle;
 mod test_redeem;
 mod test_repay;
 mod test_security;

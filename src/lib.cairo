@@ -2,7 +2,6 @@
 // Named after ancient Egyptian stone slabs used to publicly record inscriptions and decrees.
 
 pub mod errors;
-pub mod fee_vault;
 pub mod genesis;
 pub mod interfaces;
 pub mod locker_account;
@@ -11,4 +10,3 @@ pub mod snip12;
 pub mod stela;
 pub mod types;
 pub mod utils;
-
