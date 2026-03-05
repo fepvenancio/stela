@@ -81,7 +81,8 @@ fn deploy_vault_setup() -> VaultSetup {
     let mut genesis_calldata: Array<felt252> = array![];
     OWNER().serialize(ref genesis_calldata);
     pay_token_address.serialize(ref genesis_calldata);
-    TREASURY().serialize(ref genesis_calldata);
+    TREASURY().serialize(ref genesis_calldata); // mint_recipient
+    TREASURY().serialize(ref genesis_calldata); // treasury (receives 100 reserve NFTs)
     let base_uri: ByteArray = "https://api.stela.xyz/genesis/";
     base_uri.serialize(ref genesis_calldata);
     let (genesis_address, _) = genesis_class.deploy(@genesis_calldata).unwrap();
@@ -97,10 +98,10 @@ fn deploy_vault_setup() -> VaultSetup {
     let (vault_address, _) = vault_class.deploy(@vault_calldata).unwrap();
     let vault = IFeeVaultDispatcher { contract_address: vault_address };
 
-    // Admin mint NFTs to holders: HOLDER_1 gets #1, HOLDER_2 gets #2
+    // Admin mint NFTs to holders: HOLDER_1 gets #101, HOLDER_2 gets #102 (1-100 are treasury)
     start_cheat_caller_address(genesis_address, OWNER());
-    genesis.admin_mint(HOLDER_1(), 1); // token_id = 1
-    genesis.admin_mint(HOLDER_2(), 1); // token_id = 2
+    genesis.admin_mint(HOLDER_1(), 1); // token_id = 101
+    genesis.admin_mint(HOLDER_2(), 1); // token_id = 102
     stop_cheat_caller_address(genesis_address);
 
     VaultSetup {
@@ -274,14 +275,14 @@ fn test_claim_single_token() {
     setup.vault.deposit(setup.fee_token_address, deposit_amount);
     stop_cheat_caller_address(setup.vault_address);
 
-    // HOLDER_1 claims for token_id = 1
+    // HOLDER_1 claims for token_id = 101
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim(1);
+    setup.vault.claim(101);
     stop_cheat_caller_address(setup.vault_address);
 
     assert(setup.fee_token.balance_of(HOLDER_1()) == 100, 'holder1 should get 100');
     // Claimable should now be 0
-    assert(setup.vault.claimable(1, setup.fee_token_address) == 0, 'should be 0 after claim');
+    assert(setup.vault.claimable(101, setup.fee_token_address) == 0, 'should be 0 after claim');
 }
 
 #[test]
@@ -310,12 +311,12 @@ fn test_claim_token_specific() {
 
     // Claim only token 1
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim_token(1, setup.fee_token_address);
+    setup.vault.claim_token(101, setup.fee_token_address);
     stop_cheat_caller_address(setup.vault_address);
 
     assert(setup.fee_token.balance_of(HOLDER_1()) == 6, 'should get 6 of token1');
     // Token 2 should still be claimable
-    assert(setup.vault.claimable(1, setup.fee_token_2_address) == 12, 'token2 still claimable');
+    assert(setup.vault.claimable(101, setup.fee_token_2_address) == 12, 'token2 still claimable');
 }
 
 #[test]
@@ -351,7 +352,7 @@ fn test_claim_after_multiple_deposits() {
 
     // Claim
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim(1);
+    setup.vault.claim(101);
     stop_cheat_caller_address(setup.vault_address);
 
     assert(setup.fee_token.balance_of(HOLDER_1()) == 18, 'should get accumulated 18');
@@ -363,7 +364,7 @@ fn test_claim_with_zero_claimable() {
 
     // No deposits yet — claim should succeed silently
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim(1);
+    setup.vault.claim(101);
     stop_cheat_caller_address(setup.vault_address);
 
     assert(setup.fee_token.balance_of(HOLDER_1()) == 0, 'should have 0');
@@ -373,9 +374,9 @@ fn test_claim_with_zero_claimable() {
 fn test_claim_batch() {
     let setup = deploy_vault_setup();
 
-    // Mint more NFTs to HOLDER_1 (tokens 3 and 4)
+    // Mint more NFTs to HOLDER_1 (tokens 103 and 104)
     start_cheat_caller_address(setup.genesis_address, OWNER());
-    setup.genesis.admin_mint(HOLDER_1(), 2); // token_ids 3, 4
+    setup.genesis.admin_mint(HOLDER_1(), 2); // token_ids 103, 104
     stop_cheat_caller_address(setup.genesis_address);
 
     // Deposit
@@ -390,9 +391,9 @@ fn test_claim_batch() {
     setup.vault.deposit(setup.fee_token_address, 30_000);
     stop_cheat_caller_address(setup.vault_address);
 
-    // Batch claim tokens 1, 3, 4
+    // Batch claim tokens 101, 103, 104
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim_batch(array![1, 3, 4]);
+    setup.vault.claim_batch(array![101, 103, 104]);
     stop_cheat_caller_address(setup.vault_address);
 
     // 60 per NFT * 3 NFTs = 180
@@ -416,9 +417,9 @@ fn test_claim_not_owner_reverts() {
     setup.vault.deposit(setup.fee_token_address, 30_000);
     stop_cheat_caller_address(setup.vault_address);
 
-    // HOLDER_2 tries to claim token_id = 1 (owned by HOLDER_1)
+    // HOLDER_2 tries to claim token_id = 101 (owned by HOLDER_1)
     start_cheat_caller_address(setup.vault_address, HOLDER_2());
-    setup.vault.claim(1);
+    setup.vault.claim(101);
 }
 
 #[test]
@@ -438,13 +439,13 @@ fn test_double_claim_gets_zero_second_time() {
 
     // First claim
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim(1);
+    setup.vault.claim(101);
     stop_cheat_caller_address(setup.vault_address);
     assert(setup.fee_token.balance_of(HOLDER_1()) == 60, 'first claim: 60');
 
     // Second claim (no new deposits)
     start_cheat_caller_address(setup.vault_address, HOLDER_1());
-    setup.vault.claim(1);
+    setup.vault.claim(101);
     stop_cheat_caller_address(setup.vault_address);
     assert(setup.fee_token.balance_of(HOLDER_1()) == 60, 'second claim: still 60');
 }
@@ -477,7 +478,7 @@ fn test_claimable_all() {
     setup.vault.deposit(setup.fee_token_2_address, 6_000);
     stop_cheat_caller_address(setup.vault_address);
 
-    let (tokens, amounts) = setup.vault.claimable_all(1);
+    let (tokens, amounts) = setup.vault.claimable_all(101);
     assert(tokens.len() == 2, 'should have 2 tokens');
     assert(amounts.len() == 2, 'should have 2 amounts');
     assert(*amounts.at(0) == 6, 'token1: 6');
@@ -528,4 +529,73 @@ fn test_set_genesis_nft() {
     stop_cheat_caller_address(setup.vault_address);
 
     assert(setup.vault.get_genesis_nft() == HOLDER_1(), 'should be updated');
+}
+
+// ============================================================
+//                    SNAPSHOT TESTS
+// ============================================================
+
+#[test]
+fn test_snapshot_prevents_retroactive_claim() {
+    let setup = deploy_vault_setup();
+
+    // Deposit 50,000 BEFORE minting NFT #103
+    setup_depositor(
+        setup.fee_token,
+        setup.fee_token_address,
+        setup.vault_address,
+        DEPOSITOR(),
+        50_000,
+    );
+    start_cheat_caller_address(setup.vault_address, DEPOSITOR());
+    setup.vault.deposit(setup.fee_token_address, 50_000);
+    stop_cheat_caller_address(setup.vault_address);
+
+    // cumulative = 100 per NFT (50,000 / 500)
+    assert(setup.vault.cumulative_per_nft(setup.fee_token_address) == 100, 'cumulative 100');
+
+    // Link vault to genesis so mints trigger snapshot
+    start_cheat_caller_address(setup.genesis_address, OWNER());
+    setup.genesis.set_fee_vault(setup.vault_address);
+    stop_cheat_caller_address(setup.genesis_address);
+
+    // Mint NFT #103 to HOLDER_1 (after treasury 1-100 + admin 101-102)
+    // This triggers snapshot_new_nft which sets claimed[103] = cumulative = 100
+    start_cheat_caller_address(setup.genesis_address, OWNER());
+    setup.genesis.admin_mint(HOLDER_1(), 1); // token_id = 103
+    stop_cheat_caller_address(setup.genesis_address);
+
+    // NFT #103 should have 0 claimable (snapshot zeroed out retroactive fees)
+    assert(setup.vault.claimable(103, setup.fee_token_address) == 0, 'new nft 0 claimable');
+
+    // NFT #101 (minted before vault link) should still have full 100
+    assert(setup.vault.claimable(101, setup.fee_token_address) == 100, 'old nft 100 claimable');
+
+    // Now deposit MORE fees
+    setup_depositor(
+        setup.fee_token,
+        setup.fee_token_address,
+        setup.vault_address,
+        DEPOSITOR(),
+        25_000,
+    );
+    start_cheat_caller_address(setup.vault_address, DEPOSITOR());
+    setup.vault.deposit(setup.fee_token_address, 25_000);
+    stop_cheat_caller_address(setup.vault_address);
+
+    // cumulative = 100 + 50 = 150
+    // NFT #103 should only get the new 50 (150 - 100 snapshot)
+    assert(setup.vault.claimable(103, setup.fee_token_address) == 50, 'new nft earns 50');
+    // NFT #101 should get all 150 (never claimed)
+    assert(setup.vault.claimable(101, setup.fee_token_address) == 150, 'old nft earns 150');
+}
+
+#[test]
+#[should_panic(expected: 'VAULT: not genesis contract')]
+fn test_snapshot_only_callable_by_genesis() {
+    let setup = deploy_vault_setup();
+
+    // Random caller tries to snapshot — should revert
+    start_cheat_caller_address(setup.vault_address, HOLDER_1());
+    setup.vault.snapshot_new_nft(999);
 }

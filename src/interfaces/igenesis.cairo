@@ -18,6 +18,7 @@ pub trait IStelaGenesis<TContractState> {
     fn mint_enabled(self: @TContractState) -> bool;
     fn payment_token(self: @TContractState) -> ContractAddress;
     fn mint_recipient(self: @TContractState) -> ContractAddress;
+    fn max_per_wallet(self: @TContractState) -> u256;
 
     // --- Admin (owner only) ---
     fn set_mint_price(ref self: TContractState, price: u256);
@@ -26,4 +27,8 @@ pub trait IStelaGenesis<TContractState> {
     fn set_base_uri(ref self: TContractState, base_uri: ByteArray);
     /// Owner can mint to specific address (for reserves/airdrops).
     fn admin_mint(ref self: TContractState, to: ContractAddress, quantity: u256);
+    /// Set the FeeVault address for mint-time fee snapshots. Only owner.
+    fn set_fee_vault(ref self: TContractState, fee_vault: ContractAddress);
+    /// Get the FeeVault address.
+    fn get_fee_vault(self: @TContractState) -> ContractAddress;
 }

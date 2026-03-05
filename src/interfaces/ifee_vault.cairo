@@ -46,4 +46,10 @@ pub trait IFeeVault<TContractState> {
 
     /// Update the Genesis NFT contract address. Only owner.
     fn set_genesis_nft(ref self: TContractState, genesis_nft: ContractAddress);
+
+    /// Snapshot current cumulative values for a newly minted NFT.
+    /// Sets claimed_per_nft to current cumulative for all registered tokens,
+    /// so the new holder only earns fees deposited after their mint.
+    /// Callable only by the Genesis NFT contract.
+    fn snapshot_new_nft(ref self: TContractState, token_id: u256);
 }

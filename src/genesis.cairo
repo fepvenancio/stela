@@ -4,6 +4,7 @@
 #[starknet::contract]
 pub mod StelaGenesis {
     use core::num::traits::Zero;
+    use crate::interfaces::ifee_vault::{IFeeVaultDispatcher, IFeeVaultDispatcherTrait};
     use openzeppelin_access::ownable::OwnableComponent;
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
     use openzeppelin_introspection::src5::SRC5Component;
@@ -14,6 +15,12 @@ pub mod StelaGenesis {
 
     /// Maximum number of NFTs that can be minted in a single batch transaction.
     const MAX_BATCH_SIZE: u256 = 5;
+
+    /// Maximum number of NFTs a single wallet can hold from public minting.
+    const MAX_PER_WALLET: u256 = 5;
+
+    /// Number of NFTs reserved for treasury, minted on deployment.
+    const TREASURY_RESERVE: u256 = 100;
 
     // Component declarations
     component!(path: ERC721Component, storage: erc721, event: ERC721Event);
@@ -56,6 +63,7 @@ pub mod StelaGenesis {
         mint_recipient: ContractAddress,
         max_supply: u256,
         mint_enabled: bool,
+        fee_vault: ContractAddress,
     }
 
     // ============================================================
@@ -95,11 +103,13 @@ pub mod StelaGenesis {
         owner: ContractAddress,
         payment_token: ContractAddress,
         mint_recipient: ContractAddress,
+        treasury: ContractAddress,
         base_uri: ByteArray,
     ) {
         assert(!owner.is_zero(), 'GENESIS: invalid owner');
         assert(!payment_token.is_zero(), 'GENESIS: invalid token');
         assert(!mint_recipient.is_zero(), 'GENESIS: invalid recipient');
+        assert(!treasury.is_zero(), 'GENESIS: invalid treasury');
 
         self.erc721.initializer("Stela Genesis", "SGEN", base_uri);
         self.ownable.initializer(owner);
@@ -109,6 +119,13 @@ pub mod StelaGenesis {
         self.mint_recipient.write(mint_recipient);
         self.mint_enabled.write(false);
         self.total_minted.write(0);
+
+        // Mint treasury reserve on deployment
+        let mut i: u256 = 0;
+        while i < TREASURY_RESERVE {
+            self._mint_one(treasury, false);
+            i += 1;
+        };
     }
 
     // ============================================================
@@ -122,6 +139,8 @@ pub mod StelaGenesis {
             assert(self.mint_enabled.read(), 'GENESIS: mint disabled');
 
             let caller = get_caller_address();
+            let balance = self.erc721.balance_of(caller);
+            assert(balance < MAX_PER_WALLET, 'GENESIS: wallet limit reached');
             self._mint_one(caller, true);
         }
 
@@ -132,6 +151,8 @@ pub mod StelaGenesis {
             assert(quantity <= MAX_BATCH_SIZE, 'GENESIS: exceeds batch limit');
 
             let caller = get_caller_address();
+            let balance = self.erc721.balance_of(caller);
+            assert(balance + quantity <= MAX_PER_WALLET, 'GENESIS: wallet limit reached');
             let mut i: u256 = 0;
             while i < quantity {
                 self._mint_one(caller, true);
@@ -163,6 +184,10 @@ pub mod StelaGenesis {
 
         fn mint_recipient(self: @ContractState) -> ContractAddress {
             self.mint_recipient.read()
+        }
+
+        fn max_per_wallet(self: @ContractState) -> u256 {
+            MAX_PER_WALLET
         }
 
         // --- Admin (owner only) ---
@@ -201,6 +226,15 @@ pub mod StelaGenesis {
                 i += 1;
             };
         }
+
+        fn set_fee_vault(ref self: ContractState, fee_vault: ContractAddress) {
+            self.ownable.assert_only_owner();
+            self.fee_vault.write(fee_vault);
+        }
+
+        fn get_fee_vault(self: @ContractState) -> ContractAddress {
+            self.fee_vault.read()
+        }
     }
 
     // ============================================================
@@ -226,6 +260,7 @@ pub mod StelaGenesis {
     #[generate_trait]
     impl InternalImpl of InternalTrait {
         /// Mint a single token. If `collect_payment` is true, pulls ERC20 from the caller.
+        /// If fee_vault is set, snapshots the new NFT so it only earns future fees.
         fn _mint_one(ref self: ContractState, to: ContractAddress, collect_payment: bool) {
             let minted = self.total_minted.read();
             assert(minted < self.max_supply.read(), 'GENESIS: sold out');
@@ -241,6 +276,13 @@ pub mod StelaGenesis {
 
             self.erc721.mint(to, token_id);
             self.total_minted.write(token_id);
+
+            // Snapshot fee checkpoint so this NFT only earns fees from this point forward
+            let vault_addr = self.fee_vault.read();
+            if !vault_addr.is_zero() {
+                let vault = IFeeVaultDispatcher { contract_address: vault_addr };
+                vault.snapshot_new_nft(token_id);
+            }
 
             self.emit(Minted { token_id, minter: to, price: if collect_payment { price } else { 0 } });
         }

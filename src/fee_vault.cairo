@@ -94,6 +94,7 @@ pub mod FeeVault {
         pub const ZERO_AMOUNT: felt252 = 'VAULT: zero amount';
         pub const NOT_OWNER: felt252 = 'VAULT: not owner';
         pub const TOKEN_REGISTERED: felt252 = 'VAULT: token registered';
+        pub const NOT_GENESIS: felt252 = 'VAULT: not genesis contract';
     }
 
     // ============================================================
@@ -252,6 +253,22 @@ pub mod FeeVault {
             self.ownable.assert_only_owner();
             assert(!genesis_nft.is_zero(), Errors::INVALID_ADDRESS);
             self.genesis_nft.write(genesis_nft);
+        }
+
+        fn snapshot_new_nft(ref self: ContractState, token_id: u256) {
+            // Only the Genesis NFT contract can call this
+            assert(get_caller_address() == self.genesis_nft.read(), Errors::NOT_GENESIS);
+
+            // Set claimed checkpoint to current cumulative for all registered tokens
+            // so this NFT only earns fees deposited after this point
+            let count = self.fee_token_count.read();
+            let mut i: u32 = 0;
+            while i < count {
+                let token = self.fee_tokens.read(i);
+                let cumulative = self.cumulative_per_nft.read(token);
+                self.claimed_per_nft.write((token, token_id), cumulative);
+                i += 1;
+            };
         }
     }
 

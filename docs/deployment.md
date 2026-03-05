@@ -270,6 +270,24 @@ Deployer: `0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310`
 - [ ] StelaProtocol deployed with correct constructor arguments
 - [ ] Constructor parameters verified (owner, NFT, registry, implementation hash)
 
+### Genesis NFT Deployment
+
+StelaGenesis constructor takes `(owner, payment_token, mint_recipient, treasury, base_uri)`:
+
+- `treasury` receives 100 reserve NFTs (token IDs 1-100) at deployment — hardcoded as `TREASURY_RESERVE = 100`
+- Public mint is capped at 5 per wallet (`MAX_PER_WALLET = 5`), 400 NFTs available
+- Mint starts disabled; owner calls `set_mint_enabled(true)` then `renounce_ownership()`
+- After renounce: mint price (5,000 STRK), mint status, base URI, and admin mint are all permanently locked
+
+Deployment sequence:
+1. Deploy **StelaGenesis** — 100 NFTs auto-mint to treasury in constructor
+2. Deploy **FeeVault** with `(owner, genesis_address, total_nfts=500)`
+3. Call `stela.set_fee_vault(vault_address)` on the Stela contract
+4. Call `genesis.set_mint_enabled(true)` to open public minting
+5. Call `genesis.set_mint_recipient(vault_address)` if mint revenue should go to vault
+6. Call `genesis.renounce_ownership()` — permanent, irreversible
+7. Call `fee_vault.renounce_ownership()` — permanent, irreversible
+
 ### Post-Deployment
 
 - [ ] `set_treasury` if treasury differs from owner

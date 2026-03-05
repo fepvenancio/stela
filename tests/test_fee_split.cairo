@@ -152,13 +152,14 @@ fn deploy_fee_split_setup() -> FeeSplitSetup {
     let mut genesis_calldata: Array<felt252> = array![];
     OWNER().serialize(ref genesis_calldata);
     pay_token_address.serialize(ref genesis_calldata);
-    TREASURY().serialize(ref genesis_calldata);
+    TREASURY().serialize(ref genesis_calldata); // mint_recipient
+    TREASURY().serialize(ref genesis_calldata); // treasury (receives 100 reserve NFTs)
     let base_uri: ByteArray = "https://api.stela.xyz/genesis/";
     base_uri.serialize(ref genesis_calldata);
     let (genesis_address, _) = genesis_class.deploy(@genesis_calldata).unwrap();
     let genesis = IStelaGenesisDispatcher { contract_address: genesis_address };
 
-    // Mint a Genesis NFT to HOLDER (token_id = 1)
+    // Mint a Genesis NFT to HOLDER (token_id = 101, after 100 treasury reserve)
     start_cheat_caller_address(genesis_address, OWNER());
     genesis.admin_mint(HOLDER(), 1);
     stop_cheat_caller_address(genesis_address);
@@ -909,7 +910,7 @@ fn test_full_lifecycle_with_vault_and_claim() {
     // NFT holder claims from vault
     let holder_balance_before = setup.debt_token.balance_of(HOLDER());
     start_cheat_caller_address(setup.vault_address, HOLDER());
-    setup.vault.claim(1); // token_id = 1
+    setup.vault.claim(101); // token_id = 101 (after 100 treasury reserve)
     stop_cheat_caller_address(setup.vault_address);
 
     let holder_balance_after = setup.debt_token.balance_of(HOLDER());
