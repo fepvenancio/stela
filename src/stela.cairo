@@ -87,6 +87,7 @@ pub mod StelaProtocol {
     impl ReentrancyGuardInternalImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
 
     // Pausable
+    impl PausableImpl = PausableComponent::PausableImpl<ContractState>;
     impl PausableInternalImpl = PausableComponent::InternalImpl<ContractState>;
 
     // Nonces
@@ -650,7 +651,7 @@ pub mod StelaProtocol {
 
         /// Check if the protocol is currently paused.
         fn is_paused(self: @ContractState) -> bool {
-            self.pausable.Pausable_paused.read()
+            self.pausable.is_paused()
         }
 
         /// Returns true if the order has been registered on-chain (first fill completed).
@@ -1503,6 +1504,9 @@ pub mod StelaProtocol {
         /// Issue debt from lender to borrower with fee deduction.
         /// Fee model: RELAYER_BPS (5) to relayer + discounted treasury BPS to treasury.
         /// Treasury fees are transferred directly (no FeeVault). Returns total relayer fee.
+        /// NOTE: Fee truncation — (value * bps) / MAX_BPS truncates to zero for amounts < 10000 wei.
+        /// For very small settlements the relayer receives nothing. Not exploitable (no incentive
+        /// to settle dust amounts at gas cost), but practical minimum is ~10000 wei per debt asset.
         fn _issue_debt_with_fee(
             ref self: ContractState,
             from: ContractAddress,

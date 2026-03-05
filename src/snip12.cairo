@@ -37,6 +37,10 @@ pub struct InscriptionOrder {
     pub nonce: felt252,
 }
 
+// NOTE: Type string uses "u128" for debt_count/interest_count/collateral_count (actual: u32)
+// and duration/deadline (actual: u64). This is cosmetic — all these types serialize to a single
+// felt252 via the Hash trait, so the hash computation is identical. Changing the type string
+// would alter the type hash and break signature verification against the deployed contract.
 const INSCRIPTION_ORDER_TYPE_HASH: felt252 = selector!(
     "\"InscriptionOrder\"(\"borrower\":\"ContractAddress\",\"debt_hash\":\"felt\",\"interest_hash\":\"felt\",\"collateral_hash\":\"felt\",\"debt_count\":\"u128\",\"interest_count\":\"u128\",\"collateral_count\":\"u128\",\"duration\":\"u128\",\"deadline\":\"u128\",\"multi_lender\":\"bool\",\"nonce\":\"felt\")",
 );

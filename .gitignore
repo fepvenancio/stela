@@ -6,3 +6,5 @@ target/
 .env*.secret
 .dev.vars
 *.secret
+.wrangler/
+.wrangler/
