@@ -1474,3 +1474,156 @@ fn test_self_lending_lender_side_rejected() {
     start_cheat_caller_address(stela_address, LENDER());
     stela.sign_inscription(inscription_id, MAX_BPS);
 }
+
+// ============================================================
+//       REPAY BY NON-BORROWER → UNAUTHORIZED
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: unauthorized')]
+fn test_repay_by_non_borrower_fails() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+    let debt_token = setup.debt_token;
+    let debt_token_address = setup.debt_token_address;
+    let collateral_token = setup.collateral_token;
+    let collateral_token_address = setup.collateral_token_address;
+    let interest_token = setup.interest_token;
+    let interest_token_address = setup.interest_token_address;
+
+    collateral_token.mint(BORROWER(), 500);
+    start_cheat_caller_address(collateral_token_address, BORROWER());
+    collateral_token.approve(stela_address, 500);
+    stop_cheat_caller_address(collateral_token_address);
+
+    debt_token.mint(LENDER(), 1000);
+    start_cheat_caller_address(debt_token_address, LENDER());
+    debt_token.approve(stela_address, 1000);
+    stop_cheat_caller_address(debt_token_address);
+
+    start_cheat_block_timestamp_global(1000);
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(debt_token_address, 1000)],
+        interest_assets: array![create_erc20_asset(interest_token_address, 100)],
+        collateral_assets: array![create_erc20_asset(collateral_token_address, 500)],
+        duration: 86400,
+        deadline: 2000,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+    stop_cheat_caller_address(stela_address);
+
+    // Setup repayment tokens for lender (non-borrower)
+    debt_token.mint(LENDER(), 1000);
+    interest_token.mint(LENDER(), 100);
+    start_cheat_caller_address(debt_token_address, LENDER());
+    debt_token.approve(stela_address, 1000);
+    stop_cheat_caller_address(debt_token_address);
+    start_cheat_caller_address(interest_token_address, LENDER());
+    interest_token.approve(stela_address, 100);
+    stop_cheat_caller_address(interest_token_address);
+
+    stop_cheat_block_timestamp_global();
+    start_cheat_block_timestamp_global(50000);
+
+    // Lender tries to repay — should fail (only borrower can repay)
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.repay(inscription_id);
+}
+
+// ============================================================
+//       REPAY AFTER LIQUIDATION → ALREADY_LIQUIDATED
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: already liquidated')]
+fn test_repay_after_liquidation_fails() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+    let debt_token = setup.debt_token;
+    let debt_token_address = setup.debt_token_address;
+    let collateral_token = setup.collateral_token;
+    let collateral_token_address = setup.collateral_token_address;
+    let interest_token = setup.interest_token;
+    let interest_token_address = setup.interest_token_address;
+
+    collateral_token.mint(BORROWER(), 500);
+    start_cheat_caller_address(collateral_token_address, BORROWER());
+    collateral_token.approve(stela_address, 500);
+    stop_cheat_caller_address(collateral_token_address);
+
+    debt_token.mint(LENDER(), 1000);
+    start_cheat_caller_address(debt_token_address, LENDER());
+    debt_token.approve(stela_address, 1000);
+    stop_cheat_caller_address(debt_token_address);
+
+    start_cheat_block_timestamp_global(1000);
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(debt_token_address, 1000)],
+        interest_assets: array![create_erc20_asset(interest_token_address, 100)],
+        collateral_assets: array![create_erc20_asset(collateral_token_address, 500)],
+        duration: 86400,
+        deadline: 2000,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+    stop_cheat_caller_address(stela_address);
+
+    // Advance past duration and liquidate
+    stop_cheat_block_timestamp_global();
+    start_cheat_block_timestamp_global(1000 + 86400 + 1);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.liquidate(inscription_id);
+    stop_cheat_caller_address(stela_address);
+
+    // Now try to repay — should fail
+    debt_token.mint(BORROWER(), 1000);
+    interest_token.mint(BORROWER(), 100);
+    start_cheat_caller_address(debt_token_address, BORROWER());
+    debt_token.approve(stela_address, 1000);
+    stop_cheat_caller_address(debt_token_address);
+    start_cheat_caller_address(interest_token_address, BORROWER());
+    interest_token.approve(stela_address, 100);
+    stop_cheat_caller_address(interest_token_address);
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    stela.repay(inscription_id);
+}
+
+// ============================================================
+//       LIQUIDATE NON-EXISTENT → INVALID_INSCRIPTION
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: invalid inscription')]
+fn test_liquidate_nonexistent_inscription_fails() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    start_cheat_block_timestamp_global(1000);
+
+    // Try to liquidate inscription ID 999 which doesn't exist
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.liquidate(999);
+}

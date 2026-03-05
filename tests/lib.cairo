@@ -1,6 +1,8 @@
 mod mocks;
 mod test_create_inscription;
+mod test_discount;
 mod test_e2e;
+mod test_fill_signed_order;
 mod test_genesis;
 mod test_hash_compat;
 mod test_liquidate;
