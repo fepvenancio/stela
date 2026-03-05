@@ -13,7 +13,7 @@ use stela::types::asset::{Asset, AssetType};
 use stela::utils::share_math::MAX_BPS;
 use super::mocks::mock_erc20::IMockERC20DispatcherTrait;
 use super::test_utils::{
-    BORROWER, LENDER, LENDER_2, MOCK_NFT, MOCK_TOKEN, NFT_CONTRACT, OWNER, REGISTRY, TREASURY, create_erc20_asset,
+    BORROWER, LENDER, LENDER_2, MOCK_NFT, MOCK_TOKEN, NFT_CONTRACT, OWNER, REGISTRY, create_erc20_asset,
     deploy_full_setup, deploy_stela, setup_borrower_for_repayment, setup_borrower_with_collateral,
     setup_lender_with_debt,
 };

@@ -1831,6 +1831,7 @@ pub mod StelaProtocol {
         }
 
         /// Process a single asset payment based on asset type.
+        /// Skips ERC20/ERC4626 transfers when scaled amount is zero to prevent reverts.
         fn _process_payment(
             ref self: ContractState, asset: Asset, from: ContractAddress, to: ContractAddress, percentage: u256,
         ) {
@@ -1841,16 +1842,20 @@ pub mod StelaProtocol {
                 },
                 AssetType::ERC1155 => {
                     let amount = scale_by_percentage(asset.value, percentage);
-                    let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
-                    erc1155.safe_transfer_from(from, to, asset.token_id, amount, array![].span());
+                    if amount > 0 {
+                        let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
+                        erc1155.safe_transfer_from(from, to, asset.token_id, amount, array![].span());
+                    }
                 },
                 _ => {
                     let amount = scale_by_percentage(asset.value, percentage);
-                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                    if from == get_contract_address() {
-                        erc20.transfer(to, amount);
-                    } else {
-                        erc20.transfer_from(from, to, amount);
+                    if amount > 0 {
+                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                        if from == get_contract_address() {
+                            erc20.transfer(to, amount);
+                        } else {
+                            erc20.transfer_from(from, to, amount);
+                        }
                     }
                 },
             }

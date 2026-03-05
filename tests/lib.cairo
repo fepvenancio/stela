@@ -6,6 +6,7 @@ mod test_hash_compat;
 mod test_liquidate;
 mod test_multi_lender;
 mod test_otc_swap;
+mod test_pause;
 mod test_redeem;
 mod test_repay;
 mod test_security;
