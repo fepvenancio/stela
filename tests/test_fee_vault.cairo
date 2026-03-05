@@ -88,15 +88,22 @@ fn deploy_vault_setup() -> VaultSetup {
     let (genesis_address, _) = genesis_class.deploy(@genesis_calldata).unwrap();
     let genesis = IStelaGenesisDispatcher { contract_address: genesis_address };
 
-    // Deploy FeeVault
+    // Deploy FeeVault (with DEPOSITOR as the authorized stela_contract for tests)
     let vault_class = declare("FeeVault").unwrap().contract_class();
     let mut vault_calldata: Array<felt252> = array![];
     OWNER().serialize(ref vault_calldata);
     genesis_address.serialize(ref vault_calldata);
     let total_nfts: u256 = 500;
     total_nfts.serialize(ref vault_calldata);
+    DEPOSITOR().serialize(ref vault_calldata); // stela_contract = DEPOSITOR for test purposes
     let (vault_address, _) = vault_class.deploy(@vault_calldata).unwrap();
     let vault = IFeeVaultDispatcher { contract_address: vault_address };
+
+    // Pre-register both fee tokens (deposit no longer auto-registers)
+    start_cheat_caller_address(vault_address, OWNER());
+    vault.register_token(fee_token_address);
+    vault.register_token(fee_token_2_address);
+    stop_cheat_caller_address(vault_address);
 
     // Admin mint NFTs to holders: HOLDER_1 gets #101, HOLDER_2 gets #102 (1-100 are treasury)
     start_cheat_caller_address(genesis_address, OWNER());
@@ -140,7 +147,7 @@ fn test_vault_constructor() {
 
     assert(setup.vault.get_genesis_nft() == setup.genesis_address, 'wrong genesis nft');
     let tokens = setup.vault.get_fee_tokens();
-    assert(tokens.len() == 0, 'should have 0 fee tokens');
+    assert(tokens.len() == 2, 'should have 2 fee tokens');
 }
 
 // ============================================================
@@ -166,10 +173,6 @@ fn test_deposit_single() {
 
     // Verify cumulative per NFT
     assert(setup.vault.cumulative_per_nft(setup.fee_token_address) == 100, 'should be 100 per nft');
-
-    // Verify auto-registration
-    let tokens = setup.vault.get_fee_tokens();
-    assert(tokens.len() == 1, 'should have 1 fee token');
 
     // Verify vault received the tokens
     assert(setup.fee_token.balance_of(setup.vault_address) == deposit_amount, 'vault should hold tokens');
@@ -241,9 +244,6 @@ fn test_deposit_multiple_tokens() {
     // Verify independent tracking
     assert(setup.vault.cumulative_per_nft(setup.fee_token_address) == 6, 'token1: 3000/500 = 6');
     assert(setup.vault.cumulative_per_nft(setup.fee_token_2_address) == 12, 'token2: 6000/500 = 12');
-
-    let tokens = setup.vault.get_fee_tokens();
-    assert(tokens.len() == 2, 'should have 2 fee tokens');
 }
 
 #[test]
@@ -251,6 +251,7 @@ fn test_deposit_multiple_tokens() {
 fn test_deposit_zero_reverts() {
     let setup = deploy_vault_setup();
 
+    // DEPOSITOR is the authorized stela_contract in tests
     start_cheat_caller_address(setup.vault_address, DEPOSITOR());
     setup.vault.deposit(setup.fee_token_address, 0);
 }
@@ -493,12 +494,9 @@ fn test_claimable_all() {
 fn test_register_token() {
     let setup = deploy_vault_setup();
 
-    start_cheat_caller_address(setup.vault_address, OWNER());
-    setup.vault.register_token(setup.fee_token_address);
-    stop_cheat_caller_address(setup.vault_address);
-
+    // Both fee tokens are already pre-registered in setup, so registering a new arbitrary one
     let tokens = setup.vault.get_fee_tokens();
-    assert(tokens.len() == 1, 'should have 1 token');
+    assert(tokens.len() == 2, 'should have 2 pre-registered');
 }
 
 #[test]
@@ -506,8 +504,8 @@ fn test_register_token() {
 fn test_register_token_duplicate_reverts() {
     let setup = deploy_vault_setup();
 
+    // fee_token is already pre-registered in setup, so this should revert
     start_cheat_caller_address(setup.vault_address, OWNER());
-    setup.vault.register_token(setup.fee_token_address);
     setup.vault.register_token(setup.fee_token_address); // duplicate
 }
 

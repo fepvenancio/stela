@@ -6,7 +6,7 @@ use starknet::ContractAddress;
 #[starknet::interface]
 pub trait IFeeVault<TContractState> {
     /// Deposit fees into the vault for distribution to NFT holders.
-    /// Callable by anyone (the Stela contract calls this during settle/redeem).
+    /// Only callable by the authorized Stela contract (set via `set_stela_contract`).
     /// The caller must have approved `token` for `amount` before calling.
     fn deposit(ref self: TContractState, token: ContractAddress, amount: u256);
 
@@ -41,11 +41,17 @@ pub trait IFeeVault<TContractState> {
     // --- Admin ---
 
     /// Register a new fee token. Only owner.
-    /// Tokens are auto-registered on first deposit, but this allows pre-registration.
+    /// Tokens must be pre-registered before they can be deposited.
     fn register_token(ref self: TContractState, token: ContractAddress);
 
     /// Update the Genesis NFT contract address. Only owner.
     fn set_genesis_nft(ref self: TContractState, genesis_nft: ContractAddress);
+
+    /// Set the authorized Stela contract for deposits. Only owner.
+    fn set_stela_contract(ref self: TContractState, stela_contract: ContractAddress);
+
+    /// Get the authorized Stela contract address.
+    fn get_stela_contract(self: @TContractState) -> ContractAddress;
 
     /// Snapshot current cumulative values for a newly minted NFT.
     /// Sets claimed_per_nft to current cumulative for all registered tokens,

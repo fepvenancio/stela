@@ -1298,3 +1298,179 @@ fn test_erc1155_collateral_allowed() {
     let inscription = stela.get_inscription(inscription_id);
     assert(inscription.collateral_asset_count == 1, 'erc1155 collateral ok');
 }
+
+// ============================================================
+//       H-1: SIGN REPAID INSCRIPTION REJECTED
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: already repaid')]
+fn test_sign_repaid_inscription_fails() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    setup_borrower_with_collateral(@setup, BORROWER(), 500);
+    setup_lender_with_debt(@setup, LENDER(), 1000);
+
+    start_cheat_block_timestamp_global(1000);
+
+    // Use far-future deadline so sign attempt doesn't hit deadline check first
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(setup.debt_token_address, 1000)],
+        interest_assets: array![create_erc20_asset(setup.interest_token_address, 100)],
+        collateral_assets: array![create_erc20_asset(setup.collateral_token_address, 500)],
+        duration: 86400,
+        deadline: 999999999,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+    stop_cheat_caller_address(stela_address);
+
+    // Repay within window
+    setup.debt_token.mint(BORROWER(), 1000);
+    setup.interest_token.mint(BORROWER(), 100);
+    start_cheat_caller_address(setup.debt_token_address, BORROWER());
+    setup.debt_token.approve(stela_address, 1000);
+    stop_cheat_caller_address(setup.debt_token_address);
+    start_cheat_caller_address(setup.interest_token_address, BORROWER());
+    setup.interest_token.approve(stela_address, 100);
+    stop_cheat_caller_address(setup.interest_token_address);
+    stop_cheat_block_timestamp_global();
+    start_cheat_block_timestamp_global(50000);
+    start_cheat_caller_address(stela_address, BORROWER());
+    stela.repay(inscription_id);
+    stop_cheat_caller_address(stela_address);
+
+    // Try to sign again — should fail with 'STELA: already repaid'
+    setup_lender_with_debt(@setup, LENDER_2(), 1000);
+    start_cheat_caller_address(stela_address, LENDER_2());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+}
+
+// ============================================================
+//       H-1: SIGN LIQUIDATED INSCRIPTION REJECTED
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: already liquidated')]
+fn test_sign_liquidated_inscription_fails() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    setup_borrower_with_collateral(@setup, BORROWER(), 500);
+    setup_lender_with_debt(@setup, LENDER(), 1000);
+
+    start_cheat_block_timestamp_global(1000);
+
+    // Use far-future deadline so sign attempt doesn't hit deadline check first
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(setup.debt_token_address, 1000)],
+        interest_assets: array![create_erc20_asset(setup.interest_token_address, 100)],
+        collateral_assets: array![create_erc20_asset(setup.collateral_token_address, 500)],
+        duration: 86400,
+        deadline: 999999999,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+    stop_cheat_caller_address(stela_address);
+
+    // Liquidate after duration expires
+    stop_cheat_block_timestamp_global();
+    start_cheat_block_timestamp_global(1000 + 86400 + 1);
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.liquidate(inscription_id);
+    stop_cheat_caller_address(stela_address);
+
+    // Try to sign again — should fail with 'STELA: already liquidated'
+    setup_lender_with_debt(@setup, LENDER_2(), 1000);
+    start_cheat_caller_address(stela_address, LENDER_2());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+}
+
+// ============================================================
+//       H-6: SELF-LENDING REJECTED (BORROWER SIGNS OWN)
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: self trade')]
+fn test_self_lending_rejected() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    // Borrower creates inscription
+    setup_borrower_with_collateral(@setup, BORROWER(), 500);
+    setup_lender_with_debt(@setup, BORROWER(), 1000); // BORROWER funds themselves
+
+    start_cheat_block_timestamp_global(1000);
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(setup.debt_token_address, 1000)],
+        interest_assets: array![create_erc20_asset(setup.interest_token_address, 100)],
+        collateral_assets: array![create_erc20_asset(setup.collateral_token_address, 500)],
+        duration: 86400,
+        deadline: 2000,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    // Borrower tries to sign their own inscription — should fail
+    start_cheat_caller_address(stela_address, BORROWER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+}
+
+// ============================================================
+//       H-6: SELF-LENDING REJECTED (LENDER SIGNS OWN)
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: self trade')]
+fn test_self_lending_lender_side_rejected() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    // Lender creates inscription (is_borrow=false)
+    setup_lender_with_debt(@setup, LENDER(), 1000);
+    setup_borrower_with_collateral(@setup, LENDER(), 500); // LENDER has collateral too
+
+    start_cheat_block_timestamp_global(1000);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    let params = InscriptionParams {
+        is_borrow: false,
+        debt_assets: array![create_erc20_asset(setup.debt_token_address, 1000)],
+        interest_assets: array![create_erc20_asset(setup.interest_token_address, 100)],
+        collateral_assets: array![create_erc20_asset(setup.collateral_token_address, 500)],
+        duration: 86400,
+        deadline: 2000,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    // Lender tries to sign their own inscription (as borrower side) — should fail
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+}

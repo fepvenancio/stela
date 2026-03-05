@@ -43,6 +43,8 @@ pub mod FeeVault {
         claimed_per_nft: Map<(ContractAddress, u256), u256>,
         // Dust accumulator: remainder from integer division (deposit_amount % total_nfts)
         dust: Map<ContractAddress, u256>,
+        // The authorized Stela contract that can call deposit()
+        stela_contract: ContractAddress,
     }
 
     // ============================================================
@@ -95,6 +97,8 @@ pub mod FeeVault {
         pub const NOT_OWNER: felt252 = 'VAULT: not owner';
         pub const TOKEN_REGISTERED: felt252 = 'VAULT: token registered';
         pub const NOT_GENESIS: felt252 = 'VAULT: not genesis contract';
+        pub const UNAUTHORIZED: felt252 = 'VAULT: unauthorized caller';
+        pub const INVALID_TOKEN: felt252 = 'VAULT: token not registered';
     }
 
     // ============================================================
@@ -107,12 +111,15 @@ pub mod FeeVault {
         owner: ContractAddress,
         genesis_nft: ContractAddress,
         total_nfts: u256,
+        stela_contract: ContractAddress,
     ) {
         self.ownable.initializer(owner);
         assert(!genesis_nft.is_zero(), Errors::INVALID_ADDRESS);
+        assert(!stela_contract.is_zero(), Errors::INVALID_ADDRESS);
         assert(total_nfts > 0, Errors::ZERO_NFTS);
         self.genesis_nft.write(genesis_nft);
         self.total_nfts.write(total_nfts);
+        self.stela_contract.write(stela_contract);
         self.fee_token_count.write(0);
     }
 
@@ -123,14 +130,16 @@ pub mod FeeVault {
     #[abi(embed_v0)]
     impl FeeVaultImpl of crate::interfaces::ifee_vault::IFeeVault<ContractState> {
         fn deposit(ref self: ContractState, token: ContractAddress, amount: u256) {
+            // Only the Stela contract can deposit fees
+            let caller = get_caller_address();
+            assert(caller == self.stela_contract.read(), Errors::UNAUTHORIZED);
+
             assert(amount > 0, Errors::ZERO_AMOUNT);
 
             let total_nfts = self.total_nfts.read();
 
-            // Auto-register token if not already registered
-            if !self.is_fee_token.read(token) {
-                self._register_token(token);
-            }
+            // Token must be pre-registered by owner
+            assert(self.is_fee_token.read(token), Errors::INVALID_TOKEN);
 
             // Pull tokens from caller
             let erc20 = IERC20Dispatcher { contract_address: token };
@@ -253,6 +262,15 @@ pub mod FeeVault {
             self.ownable.assert_only_owner();
             assert(!genesis_nft.is_zero(), Errors::INVALID_ADDRESS);
             self.genesis_nft.write(genesis_nft);
+        }
+
+        fn set_stela_contract(ref self: ContractState, stela_contract: ContractAddress) {
+            self.ownable.assert_only_owner();
+            self.stela_contract.write(stela_contract);
+        }
+
+        fn get_stela_contract(self: @ContractState) -> ContractAddress {
+            self.stela_contract.read()
         }
 
         fn snapshot_new_nft(ref self: ContractState, token_id: u256) {

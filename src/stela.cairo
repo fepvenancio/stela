@@ -558,6 +558,9 @@ pub mod StelaProtocol {
                     ._pull_collateral_from_locker(
                         locker, inscription_id, inscription.collateral_asset_count, inscription.issued_debt_percentage,
                     );
+                // Unlock locker so borrower can recover excess collateral from partial fills
+                let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
+                locker_dispatcher.unlock();
             }
 
             // Emit event
@@ -643,14 +646,14 @@ pub mod StelaProtocol {
             // Validate inscription is redeemable (repaid OR liquidated)
             assert(inscription.is_repaid || inscription.liquidated, Errors::NOT_REDEEMABLE);
 
-            // Delegate ZK verification + nullifier spending to privacy pool
-            let pool = IPrivacyPoolDispatcher { contract_address: pool_addr };
-            pool.private_redeem(request, proof);
-
             // Deduct shares from total supply (private shares were never minted as ERC1155)
             let total_supply = self.total_supply.read(request.inscription_id);
             assert(request.shares > 0 && request.shares <= total_supply, Errors::ZERO_SHARES);
             self.total_supply.write(request.inscription_id, total_supply - request.shares);
+
+            // Delegate ZK verification + nullifier spending to privacy pool
+            let pool = IPrivacyPoolDispatcher { contract_address: pool_addr };
+            pool.private_redeem(request, proof);
 
             // Transfer assets pro-rata to recipient
             if inscription.is_repaid {
@@ -879,6 +882,12 @@ pub mod StelaProtocol {
             // 6. Create inscription
             let borrower = order.borrower;
             let lender = offer.lender; // zero address for private settlements
+
+            // Prevent self-settlement (borrower == lender)
+            if !is_anonymous {
+                assert(borrower != lender, Errors::SELF_TRADE_NOT_ALLOWED);
+            }
+
             let is_swap = order.duration == 0;
 
             // Compute inscription ID (lender is zero for private — makes ID independent of lender identity)
@@ -956,6 +965,7 @@ pub mod StelaProtocol {
             let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
             let total_new_shares = shares + fee_shares;
 
+            let mut share_commitment: felt252 = 0;
             if is_private {
                 // Private settlement: commit shares to privacy pool instead of minting ERC1155.
                 // Multi-lender is not supported for private settlements (one commitment per inscription).
@@ -968,8 +978,18 @@ pub mod StelaProtocol {
                 // Consume the lender's deposit commitment (one-time use)
                 pool.consume_deposit(offer.lender_commitment);
 
+                // Compute a distinct share commitment: hash(deposit_commitment, inscription_id, shares)
+                // This prevents the deposit commitment from being used directly as a Merkle leaf
+                share_commitment = core::poseidon::PoseidonTrait::new()
+                    .update(offer.lender_commitment)
+                    .update(inscription_id.low.into())
+                    .update(inscription_id.high.into())
+                    .update(total_new_shares.low.into())
+                    .update(total_new_shares.high.into())
+                    .finalize();
+
                 // Insert share commitment into Merkle tree
-                pool.insert_commitment(offer.lender_commitment);
+                pool.insert_commitment(share_commitment);
             } else {
                 // Standard settlement: mint ERC1155 shares to lender
                 self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
@@ -1031,7 +1051,7 @@ pub mod StelaProtocol {
                 self
                     .emit(
                         PrivateSettled {
-                            inscription_id, lender_commitment: offer.lender_commitment, shares_committed: shares,
+                            inscription_id, lender_commitment: share_commitment, shares_committed: shares,
                         },
                     );
             }
@@ -1243,6 +1263,10 @@ pub mod StelaProtocol {
             // Validate not expired
             assert(timestamp <= inscription.deadline, Errors::INSCRIPTION_EXPIRED);
 
+            // Validate inscription is not already settled
+            assert(!inscription.is_repaid, Errors::ALREADY_REPAID);
+            assert(!inscription.liquidated, Errors::ALREADY_LIQUIDATED);
+
             // Determine actual debt percentage to use
             let actual_percentage = if inscription.multi_lender {
                 // Validate doesn't exceed remaining
@@ -1265,6 +1289,9 @@ pub mod StelaProtocol {
                 // Creator was lender, filler is borrower
                 (filler, inscription.lender)
             };
+
+            // Prevent self-lending
+            assert(borrower != lender, Errors::SELF_TRADE_NOT_ALLOWED);
 
             // Track whether this is the first fill
             let is_first_fill = inscription.issued_debt_percentage == 0;
