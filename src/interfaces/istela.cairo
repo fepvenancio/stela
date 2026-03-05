@@ -163,11 +163,14 @@ pub trait IStelaProtocol<TContractState> {
     /// Get the Genesis fee vault address.
     fn get_fee_vault(self: @TContractState) -> ContractAddress;
 
-    /// Pause the protocol. Only owner.
+    /// Pause the protocol. Only pauser.
     fn pause(ref self: TContractState);
 
-    /// Unpause the protocol. Only owner.
+    /// Unpause the protocol. Only pauser.
     fn unpause(ref self: TContractState);
+
+    /// Get the emergency pauser address.
+    fn get_pauser(self: @TContractState) -> ContractAddress;
 
     /// Set an allowed selector on a locker (for voting, delegation, etc while locked).
     /// Only owner.

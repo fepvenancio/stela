@@ -132,6 +132,8 @@ pub mod StelaProtocol {
         privacy_pool: ContractAddress,
         // Genesis fee vault
         fee_vault: ContractAddress,
+        // Emergency pauser (survives ownership renouncement)
+        pauser: ContractAddress,
     }
 
     // ============================================================
@@ -299,12 +301,14 @@ pub mod StelaProtocol {
         inscriptions_nft: ContractAddress,
         registry: ContractAddress,
         implementation_hash: felt252,
+        pauser: ContractAddress,
     ) {
         // Validate non-zero addresses and implementation hash
         assert(!owner.is_zero(), Errors::INVALID_ADDRESS);
         assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS);
         assert(!registry.is_zero(), Errors::INVALID_ADDRESS);
         assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
+        assert(!pauser.is_zero(), Errors::INVALID_ADDRESS);
 
         // Initialize ERC1155 with empty base URI
         self.erc1155.initializer("");
@@ -317,6 +321,8 @@ pub mod StelaProtocol {
         self.inscriptions_nft.write(inscriptions_nft);
         self.registry.write(registry);
         self.implementation_hash.write(implementation_hash);
+        // Emergency pauser — survives ownership renouncement
+        self.pauser.write(pauser);
     }
 
     // ============================================================
@@ -1213,16 +1219,21 @@ pub mod StelaProtocol {
             self.fee_vault.read()
         }
 
-        /// Pause the protocol, blocking all state-changing operations. Only owner.
+        /// Pause the protocol, blocking all state-changing operations. Only pauser.
         fn pause(ref self: ContractState) {
-            self.ownable.assert_only_owner();
+            assert(get_caller_address() == self.pauser.read(), Errors::UNAUTHORIZED);
             self.pausable.pause();
         }
 
-        /// Unpause the protocol, resuming normal operations. Only owner.
+        /// Unpause the protocol, resuming normal operations. Only pauser.
         fn unpause(ref self: ContractState) {
-            self.ownable.assert_only_owner();
+            assert(get_caller_address() == self.pauser.read(), Errors::UNAUTHORIZED);
             self.pausable.unpause();
+        }
+
+        /// Get the emergency pauser address.
+        fn get_pauser(self: @ContractState) -> ContractAddress {
+            self.pauser.read()
         }
 
         /// Add or remove an allowed selector on a specific locker TBA.

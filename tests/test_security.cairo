@@ -1110,10 +1110,10 @@ fn test_zero_implementation_hash_rejected() {
     let contract = declare("StelaProtocol").unwrap().contract_class();
     let mut calldata: Array<felt252> = array![];
     OWNER().serialize(ref calldata);
-    TREASURY().serialize(ref calldata);
     NFT_CONTRACT().serialize(ref calldata);
     REGISTRY().serialize(ref calldata);
     calldata.append(0); // zero implementation_hash
+    OWNER().serialize(ref calldata); // pauser
 
     // Deploy must fail — constructor rejects zero impl hash
     let result = contract.deploy(@calldata);
