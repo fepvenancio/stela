@@ -199,12 +199,8 @@ ERC-721 tokens cannot be split pro-rata. In `_redeem_collateral_assets`:
 
 ## Total Supply Tracking
 
-The `total_supply` map is separate from the ERC-1155 component's internal tracking. This is necessary because:
-
-1. **Private shares** are included in `total_supply` but never minted as ERC-1155 tokens. They exist only as Merkle commitments in the privacy pool.
-
-2. **Correct pro-rata math** requires `total_supply` to include ALL shares (public ERC-1155 + private committed), ensuring fair distribution between public and private lenders.
+The `total_supply` map is separate from the ERC-1155 component's internal tracking. This ensures correct pro-rata math including fee shares.
 
 The `total_supply` is:
 - Incremented by `shares + fee_shares` on each sign/settle/fill
-- Decremented by `shares` on each redeem/private_redeem
+- Decremented by `shares` on each redeem

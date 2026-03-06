@@ -217,57 +217,7 @@ net_amount = total_amount - fee_amount
 
 ---
 
-## 6. Private Settlement Flow
-
-```
-Step 1: Lender deposits tokens into privacy pool
-   - Calls shield() on the privacy pool contract
-   - Receives a deposit commitment
-
-Step 2: Lender signs LendOffer with privacy fields
-   - lender_commitment = deposit commitment (non-zero)
-   - lender = zero address (anonymous)
-   - nonce = irrelevant (skipped)
-
-Step 3: Relayer calls settle() on-chain
-
-Step 4: Contract detects private mode (lender_commitment != 0)
-   |
-   +-- Verify lender == zero address (required for private)
-   +-- Verify multi_lender == false (private doesn't support multi)
-   +-- Verify privacy pool is configured (non-zero)
-   +-- Verify borrower signature (normal)
-   +-- SKIP lender signature verification
-   +-- Consume borrower nonce (normal)
-   +-- SKIP lender nonce consumption
-   +-- Create inscription (lender = zero in stored data)
-   +-- Lock collateral (normal)
-   +-- pool.consume_deposit(commitment) -- one-time use
-   +-- pool.insert_commitment(commitment) -- into Merkle tree
-   +-- DO NOT mint ERC-1155 to lender (shares are in Merkle tree)
-   +-- Mint fee shares to treasury (always)
-   +-- Update total_supply (includes private shares)
-   +-- Pull debt from pool: pool.pull_deposit_tokens(token, borrower, net)
-   +-- Pull fee from pool: pool.pull_deposit_tokens(token, relayer, fee)
-   +-- Emit: InscriptionCreated, InscriptionSigned, OrderSettled, PrivateSettled
-
-Step 5: Later -- private redemption
-   |
-   +-- Anyone calls private_redeem(request, proof)
-   +-- Verify privacy pool configured
-   +-- Verify inscription is repaid or liquidated
-   +-- Delegate to pool.private_redeem(request, proof)
-   |     - Pool verifies ZK proof against Merkle tree
-   |     - Pool checks nullifier not spent
-   |     - Pool spends nullifier
-   +-- Deduct request.shares from total_supply
-   +-- Distribute assets pro-rata to request.recipient
-   +-- Emit: PrivateSharesRedeemed
-```
-
----
-
-## 7. Signed Order Matching Engine Flow
+## 6. Signed Order Matching Engine Flow
 
 ```
 Step 1: Maker creates inscription on-chain (create_inscription)
@@ -320,7 +270,7 @@ Order: bps=10000, min_fill_bps=2500
 
 ---
 
-## 8. Cancellation Flow
+## 7. Cancellation Flow
 
 ```
 Creator                      StelaProtocol

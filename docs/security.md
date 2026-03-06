@@ -15,7 +15,6 @@ The `StelaProtocol` integrates OpenZeppelin's `ReentrancyGuardComponent`. Protec
 | `liquidate` | Locker pull_assets (triggers ERC-20/721/1155 transfers) |
 | `redeem` | ERC-1155 burn, ERC-20/721/1155 transfers (asset distribution) |
 | `settle` | All of the above (create + sign in one transaction) |
-| `private_redeem` | Privacy pool `private_redeem` (ZK verification), ERC-20/721/1155 transfers |
 | `fill_signed_order` | ISRC6 signature verification (first fill only), then NFT mint, registry create_account, ERC-20/721/1155 transfers |
 
 Each calls `self.reentrancy_guard.start()` at entry and `self.reentrancy_guard.end()` at exit.
@@ -36,13 +35,12 @@ OpenZeppelin `PausableComponent`. Paused functions (check `assert_not_paused`):
 - `repay`
 - `liquidate`
 - `redeem`
-- `private_redeem`
 - `settle`
 - `fill_signed_order`
 
 **Not paused** (always accessible):
-- View functions: `get_inscription`, `get_locker`, `convert_to_shares`, `get_inscription_fee`, `get_treasury`, `is_paused`, `nonces`, `get_relayer_fee`, `get_privacy_pool`
-- Admin functions: `set_inscription_fee`, `set_treasury`, `set_registry`, `set_inscriptions_nft`, `set_relayer_fee`, `set_implementation_hash`, `set_locker_allowed_selector`, `set_privacy_pool`
+- View functions: `get_inscription`, `get_locker`, `convert_to_shares`, `get_inscription_fee`, `get_treasury`, `is_paused`, `nonces`, `get_relayer_fee`, `get_genesis_contract`, `get_volume_settled`
+- Admin functions: `set_inscription_fee`, `set_treasury`, `set_registry`, `set_inscriptions_nft`, `set_relayer_fee`, `set_implementation_hash`, `set_locker_allowed_selector`, `set_genesis_contract`
 - `cancel_inscription` -- allows creators to cancel unfilled inscriptions during emergencies
 - `cancel_order`, `cancel_orders_by_nonce` -- allow makers to cancel signed orders during emergencies
 
@@ -62,7 +60,7 @@ Only the owner can call `pause()` / `unpause()`.
 | `set_inscriptions_nft(nft)` | Set inscription NFT contract |
 | `set_relayer_fee(fee)` | Set relayer fee for off-chain settlement |
 | `set_implementation_hash(hash)` | Set LockerAccount class hash |
-| `set_privacy_pool(privacy_pool)` | Set privacy pool contract (zero disables) |
+| `set_genesis_contract(genesis)` | Set Genesis NFT contract for fee discounts |
 | `set_locker_allowed_selector(locker, selector, allowed)` | Configure locker allowlist |
 | `pause()` | Pause protocol |
 | `unpause()` | Unpause protocol |
@@ -102,7 +100,6 @@ All enforced via `self.ownable.assert_only_owner()`.
 | `liquidate` | Anyone | Not paused, `timestamp > signed_at + duration`, not repaid, not liquidated |
 | `redeem` | Any share holder | Not paused, inscription is repaid or liquidated, caller has shares |
 | `settle` | Anyone (relayer) | Not paused, valid signatures from both parties |
-| `private_redeem` | Anyone | Not paused, privacy pool configured, inscription repaid or liquidated, valid ZK proof |
 | `fill_signed_order` | Anyone (taker) | Not paused, caller != maker, caller == allowed_taker if nonzero, not expired, not cancelled, fill >= min_fill_bps, no overfill, valid signature on first fill |
 
 ---
@@ -241,15 +238,6 @@ Each array capped at `MAX_ASSETS = 10`. Prevents gas griefing via unbounded loop
 - Minimum fill enforcement: `fill_bps >= min_fill_bps`
 - Overfill prevention: `filled + fill_bps <= order.bps`
 
-### Private Settlement (lender_commitment != 0)
-
-- Lender signature verification is SKIPPED (anonymous)
-- Lender nonce consumption is SKIPPED
-- `lender` must be zero address
-- `multi_lender` must be false
-- Privacy pool must be configured (non-zero)
-- Shares committed to Merkle tree instead of minting ERC-1155
-
 ---
 
 ## 10. Timing Checks
@@ -310,7 +298,7 @@ All inputs validated non-zero:
 - `set_inscription_fee`: `fee <= MAX_BPS` (`FEE_TOO_HIGH`)
 - `set_relayer_fee`: `fee <= MAX_BPS` (`FEE_TOO_HIGH`)
 - `set_locker_allowed_selector`: `self.is_locker.read(locker)` (`INVALID_ADDRESS`)
-- `set_privacy_pool`: no validation (zero address disables privacy)
+- `set_genesis_contract`: no validation (zero address disables discounts)
 
 ---
 
@@ -324,9 +312,6 @@ The locker allowlist blocks known transfer selectors. Tokens with non-standard t
 
 ### Partial Fill Proportionality
 For multi-lender inscriptions not fully filled, repayment and liquidation scale proportionally to `issued_debt_percentage`. If 60% filled, borrower repays 60% and 60% of collateral is at risk.
-
-### Privacy Pool Trust
-The privacy pool contract is trusted to correctly verify ZK proofs and manage nullifiers. A compromised pool could allow double-redemption.
 
 ---
 
@@ -370,7 +355,3 @@ The privacy pool contract is trusted to correctly verify ZK proofs and manage nu
 | `SELF_TRADE_NOT_ALLOWED` | `'STELA: self trade'` | Maker filling own order |
 | `ORDER_NOT_REGISTERED` | `'STELA: order not registered'` | (Defensive assertion) |
 | `MIN_FILL_NOT_MET` | `'STELA: min fill not met'` | Fill below min_fill_bps |
-| `PRIVACY_POOL_NOT_SET` | `'STELA: privacy pool not set'` | Private settle/redeem without pool |
-| `PRIVATE_MULTI_LENDER` | `'STELA: no private multi lender'` | Private settlement + multi_lender |
-| `PRIVATE_LENDER_MUST_BE_ZERO` | `'STELA: private lender not zero'` | Private settlement with non-zero lender |
-| `PRIVATE_MISSING_COMMITMENT` | `'STELA: missing commitment'` | (Reserved) |

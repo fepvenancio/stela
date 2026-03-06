@@ -5,37 +5,20 @@
     "StelaProtocol": {
       "address": "0x042e955a1905261e7afdba17518506c8f275759e1195bc19e2eca908658bf8e9",
       "classHash": "0x11c91393c9ac1471847a4c9cbd1a40b02354920e8cd880066069e19b9f52182",
-      "feeVault": "0x065f7103f01474dcc860d200e9e8eb7c467dbe3f6dcf0af5b84cfa143fb264f6",
-      "privacyPool": "0x05852d427e3fabd544a1f2aca11f8b139b4b9c2064236172defff80ca2d5ed44",
-      "settleFee": "25 BPS (5 relayer + 20 vault)",
-      "redeemFee": "10 BPS (10 vault)",
-      "note": "Treasury reserve (100 NFTs), per-wallet cap (5), snapshot-on-mint, ownership renounced",
+      "settleFee": "20 BPS (5 relayer + 15 treasury)",
+      "redeemFee": "10 BPS (all treasury)",
+      "note": "Treasury reserve (50 NFTs), per-wallet cap (5), ownership renounced",
       "previousAddress": "0x038fb9a3bbf84aef962c70bc0ed15744f4f3088bae73bed99031b6f2b7cfab01"
     },
     "StelaGenesis": {
       "address": "0x02405de15c17aaf863bcf23c22706d73d142c8a81df29de9ef129666655847ca",
       "classHash": "0x7a475db3ebd385b5d6a569c85a4a914e67c28f502e43192e05a12d3abe2ae0b",
-      "supply": 500,
-      "treasuryReserve": 100,
+      "supply": 300,
+      "treasuryReserve": 50,
       "maxPerWallet": 5,
-      "mintPrice": "5000 STRK",
+      "mintPrice": "1000 STRK",
       "paymentToken": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
-      "feeVault": "0x065f7103f01474dcc860d200e9e8eb7c467dbe3f6dcf0af5b84cfa143fb264f6",
       "previousAddress": "0x0149d10ef36eabcd0f526133627c11a0d90602159695a447c4e87168bcb95f64"
-    },
-    "FeeVault": {
-      "address": "0x065f7103f01474dcc860d200e9e8eb7c467dbe3f6dcf0af5b84cfa143fb264f6",
-      "classHash": "0x5443ba3360d34a851aa2f91ae24105f0d624a0f8eb100cd12ea0fa1be69ae5",
-      "genesisNft": "0x02405de15c17aaf863bcf23c22706d73d142c8a81df29de9ef129666655847ca",
-      "totalNfts": 500,
-      "previousAddress": "0x07e2c438d63e5d6339d88bcf1b2adacd4a83cb8f418c7afe97d5f110cb09ac37"
-    },
-    "StelaPrivacyPool": {
-      "address": "0x05852d427e3fabd544a1f2aca11f8b139b4b9c2064236172defff80ca2d5ed44",
-      "classHash": "0x278328afc2af3aa5fe3d9b759ae716db51a334bf791b0341f225e81e01de317",
-      "stelaContract": "0x042e955a1905261e7afdba17518506c8f275759e1195bc19e2eca908658bf8e9",
-      "standbyPeriod": 0,
-      "note": "Privacy pool points to NEW Stela contract but was NOT redeployed - set_stela_contract needed"
     },
     "LockerAccount": {
       "classHash": "0x012502d64c77788b2db180beeda2188579025ddf688989d2ede5a9ca9fe9a828",

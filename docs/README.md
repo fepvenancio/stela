@@ -2,14 +2,14 @@
 
 Stela is a peer-to-peer lending, borrowing, and OTC swap protocol on StarkNet. The name comes from ancient Egyptian stone slabs used to publicly record inscriptions and decrees.
 
-The protocol allows any user to create an **inscription** -- a public offer to borrow or lend -- specifying debt assets, interest assets, collateral assets, a duration, and a deadline. Counterparties sign (fill) these inscriptions on-chain. Collateral is locked in a token-bound account (TBA) during the loan period. Lenders receive ERC-1155 shares representing their position, which they can redeem for underlying assets after repayment or liquidation. The protocol also supports instant OTC swaps (duration = 0), gasless off-chain order settlement via SNIP-12 signatures, a signed order matching engine for partial fills, and privacy-preserving lending via a ZK privacy pool.
+The protocol allows any user to create an **inscription** -- a public offer to borrow or lend -- specifying debt assets, interest assets, collateral assets, a duration, and a deadline. Counterparties sign (fill) these inscriptions on-chain. Collateral is locked in a token-bound account (TBA) during the loan period. Lenders receive ERC-1155 shares representing their position, which they can redeem for underlying assets after repayment or liquidation. The protocol also supports instant OTC swaps (duration = 0), gasless off-chain order settlement via SNIP-12 signatures, and a signed order matching engine for partial fills.
 
 ## Documentation Index
 
 | Document | Description |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture: contracts, components, storage layout, internal functions |
-| [SPEC.md](SPEC.md) | Protocol specification: entrypoints, lifecycle, SNIP-12, privacy integration |
+| [SPEC.md](SPEC.md) | Protocol specification: entrypoints, lifecycle, SNIP-12 |
 | [FLOWS.md](FLOWS.md) | Step-by-step flow diagrams for every protocol operation |
 | [TYPES.md](TYPES.md) | All structs and types with field-level documentation |
 | [EVENTS.md](EVENTS.md) | All events emitted by StelaProtocol and LockerAccount |
@@ -29,14 +29,12 @@ src/
   interfaces/
     istela.cairo                 -- IStelaProtocol trait (34 functions)
     ilocker.cairo                -- ILockerAccount trait
-    iprivacy_pool.cairo          -- IPrivacyPool trait (cross-contract interface)
     iregistry.cairo              -- IRegistry trait (SNIP-14 TBA registry)
     ierc721_mintable.cairo       -- IERC721Mintable trait (inscription NFT minting)
   types/
     asset.cairo                  -- Asset struct and AssetType enum (ERC20, ERC721, ERC1155, ERC4626)
     inscription.cairo            -- InscriptionParams and StoredInscription structs
     signed_order.cairo           -- SignedOrder struct with SNIP-12 StructHash
-    private_redeem.cairo         -- PrivateRedeemRequest struct (cross-contract Serde compatible)
   utils/
     share_math.cairo             -- ERC-4626 style share conversion with virtual offset
   mocks/
@@ -44,7 +42,6 @@ src/
     mock_erc721.cairo            -- Test ERC721 with mint (inscription NFTs)
     mock_registry.cairo          -- Test SNIP-14 TBA registry
     mock_account.cairo           -- Test account (always returns VALIDATED)
-    mock_privacy_pool.cairo      -- Test privacy pool with deposit/commitment tracking
 tests/
   lib.cairo                      -- 13 test modules
   test_create_inscription.cairo  -- Inscription creation and validation
@@ -58,7 +55,6 @@ tests/
   test_e2e.cairo                 -- Full end-to-end lifecycle
   test_utils.cairo               -- Share math functions
   test_hash_compat.cairo         -- SNIP-12 hash compatibility
-  test_private_settle.cairo      -- Private settlement with privacy pool
   test_settle.cairo              -- Off-chain settlement
 ```
 

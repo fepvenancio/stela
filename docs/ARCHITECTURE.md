@@ -6,7 +6,7 @@ The protocol consists of two deployable contracts:
 
 ### StelaProtocol (`src/stela.cairo`)
 
-The core contract. Manages the full inscription lifecycle: creation, signing, repayment, liquidation, redemption, cancellation, off-chain order settlement, signed order matching, and privacy pool integration. It is also an ERC-1155 token contract -- lender share positions are minted directly within it.
+The core contract. Manages the full inscription lifecycle: creation, signing, repayment, liquidation, redemption, cancellation, off-chain order settlement, and signed order matching. It is also an ERC-1155 token contract -- lender share positions are minted directly within it.
 
 **OpenZeppelin components integrated (6):**
 
@@ -15,7 +15,7 @@ The core contract. Manages the full inscription lifecycle: creation, signing, re
 | `ERC1155Component` | Lender share tokens. Each inscription ID is a token ID. |
 | `OwnableComponent` | Admin access control for configuration functions. |
 | `PausableComponent` | Emergency pause for all state-changing operations. |
-| `ReentrancyGuardComponent` | Protects `sign_inscription`, `repay`, `liquidate`, `redeem`, `settle`, `fill_signed_order`, `private_redeem`. |
+| `ReentrancyGuardComponent` | Protects `sign_inscription`, `repay`, `liquidate`, `redeem`, `settle`, `fill_signed_order`. |
 | `SRC5Component` | Interface introspection (required by ERC-1155). |
 | `NoncesComponent` | Per-address sequential nonces for SNIP-12 off-chain signatures in `settle()`. |
 
@@ -39,7 +39,7 @@ A SNIP-14 compliant account contract (`#[starknet::contract(account)]`) that ser
 
 ## Storage Layout
 
-### StelaProtocol Storage (22 protocol-specific variables + 6 component substorages)
+### StelaProtocol Storage (23 protocol-specific variables + 6 component substorages)
 
 ```cairo
 #[storage]
@@ -86,8 +86,9 @@ struct Storage {
     filled_amounts: Map<felt252, u256>,            // order_hash -> cumulative filled BPS
     maker_min_nonce: Map<ContractAddress, felt252>, // maker -> min valid nonce
 
-    // Privacy pool
-    privacy_pool: ContractAddress,               // zero address = disabled
+    // Genesis NFT discount system
+    genesis_contract: ContractAddress,           // Genesis NFT for fee discounts
+    volume_settled: Map<ContractAddress, u256>,   // per-address settled volume
 }
 ```
 
@@ -197,23 +198,6 @@ Borrower       Server/API        Relayer          StelaProtocol        Lender
 
 Creates and fills an inscription in one atomic transaction. The relayer receives a fee deducted from the lender's debt transfer. Both borrower and lender nonces are consumed (NoncesComponent, sequential).
 
-### Private Settlement (settle with privacy pool)
-
-When `offer.lender_commitment != 0` and `offer.lender == zero_address`:
-
-1. Lender pre-deposits tokens into the privacy pool
-2. Lender signs a `LendOffer` with `lender_commitment` set and `lender` as zero address
-3. Relayer calls `settle()` -- contract detects private mode
-4. Borrower signature verified normally; lender signature and nonce skipped
-5. `pool.consume_deposit(commitment)` -- one-time use
-6. `pool.insert_commitment(commitment)` -- shares committed to Merkle tree
-7. Debt pulled from pool (not lender) via `pool.pull_deposit_tokens()`
-8. ERC-1155 shares NOT minted -- shares exist as Merkle commitments
-9. `total_supply` still includes private shares for correct pro-rata math
-10. Multi-lender is disallowed for private settlements
-
-Later, the lender can `private_redeem()` with a ZK proof to claim assets without revealing identity.
-
 ### Signed Order Matching Engine (fill_signed_order)
 
 ```
@@ -247,19 +231,9 @@ Anyone calls liquidate(inscription_id)
   - Lenders can then redeem shares for collateral
 ```
 
-### Private Redemption
-
-```
-Anyone calls private_redeem(request, proof)
-  - Privacy pool verifies ZK proof and spends nullifier
-  - Shares deducted from total_supply (never were ERC-1155)
-  - Assets distributed pro-rata to request.recipient
-  - Emits PrivateSharesRedeemed
-```
-
 ---
 
-## All Events (15 protocol-specific)
+## All Events (12 protocol-specific)
 
 | Event | Keyed Fields | Data Fields |
 |---|---|---|
@@ -273,9 +247,6 @@ Anyone calls private_redeem(request, proof)
 | `OrderFilled` | `inscription_id`, `order_hash`, `taker` | `fill_bps`, `total_filled_bps` |
 | `OrderCancelled` | `order_hash` | `maker` |
 | `OrdersBulkCancelled` | `maker` | `new_min_nonce` |
-| `PrivateSettled` | `inscription_id`, `lender_commitment` | `shares_committed` |
-| `PrivateSharesRedeemed` | `inscription_id`, `nullifier` | `shares`, `recipient` |
-
 LockerAccount events:
 
 | Event | Keyed Fields | Data Fields |
@@ -304,7 +275,6 @@ Plus flattened OZ component events: ERC1155Event, OwnableEvent, SRC5Event, Reent
 | `_lock_collateral(from, locker, id, count, pct, first)` | Transfer collateral from borrower to TBA locker. Skips ERC721 on subsequent fills. |
 | `_issue_debt(from, to, id, count, pct)` | Transfer debt from lender to borrower (standard sign_inscription). |
 | `_issue_debt_with_fee(from, to, relayer, id, count, pct, fee_bps)` | Transfer debt with relayer fee deduction (settle). Returns total fee. |
-| `_issue_debt_from_pool(pool, to, relayer, id, count, pct, fee_bps)` | Pull debt from privacy pool to borrower + relayer (private settle). Returns total fee. |
 | `_pull_repayment(from, id, debt_count, interest_count, pct)` | Pull debt + interest from borrower on repay. Credits per-inscription balances. |
 | `_pull_collateral_from_locker(locker, id, count, pct)` | Pull collateral from locker on liquidation. Scales fungibles by issued_debt_percentage. Credits balances. |
 | `_redeem_debt_assets(to, id, count, shares, supply)` | Pro-rata debt distribution: `tracked_balance * shares / total_supply`. |
@@ -356,8 +326,6 @@ The `block_timestamp` ensures uniqueness for repeated terms. For `settle()`, the
 
 2. **Lender field semantics**: For single-lender inscriptions, `inscription.lender` stores the actual lender. For multi-lender inscriptions, lender ownership is tracked via ERC-1155 share balances, not the `lender` field.
 
-3. **Private settlement constraints**: Multi-lender is not supported for private settlements (one commitment per inscription). The lender address is zero in the stored inscription.
+3. **Non-standard token functions**: The locker's allowlist blocks all calls by default. Tokens with non-standard transfer functions could theoretically be used for governance actions while locked, but this is by design (allowlisted selectors).
 
-4. **Non-standard token functions**: The locker's allowlist blocks all calls by default. Tokens with non-standard transfer functions could theoretically be used for governance actions while locked, but this is by design (allowlisted selectors).
-
-5. **ERC-1155 in debt/interest**: Forbidden because redemption functions use `IERC20Dispatcher.transfer`, which would revert on ERC-1155 contracts.
+4. **ERC-1155 in debt/interest**: Forbidden because redemption functions use `IERC20Dispatcher.transfer`, which would revert on ERC-1155 contracts.

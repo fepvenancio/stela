@@ -182,14 +182,6 @@ set_relayer_fee(fee: u256)
 
 For off-chain settlement. Deducted from lender's debt transfer, sent to relayer. Default is 0.
 
-### Set Privacy Pool
-
-```
-set_privacy_pool(privacy_pool: ContractAddress)
-```
-
-Zero address disables privacy features. When set, `settle()` supports private settlement (`lender_commitment != 0`, anonymous lender) and `private_redeem()` becomes available for ZK-verified redemption.
-
 ### Update Implementation Hash
 
 ```
@@ -218,7 +210,7 @@ Both reject zero addresses.
 ### Pause/Unpause
 
 ```
-pause()    -- Halts create, sign, repay, liquidate, redeem, settle, fill_signed_order, private_redeem
+pause()    -- Halts create, sign, repay, liquidate, redeem, settle, fill_signed_order
 unpause()  -- Resumes normal operation
 ```
 
@@ -226,14 +218,12 @@ unpause()  -- Resumes normal operation
 
 ## Contract Addresses (Sepolia)
 
-### Current Deployment (genesis-fee-vault)
+### Current Deployment (protocol-overhaul)
 
 | Contract | Address |
 |---|---|
 | **StelaProtocol** | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` |
 | **StelaGenesis NFT** | `0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3` |
-| **FeeVault** | `0x0111beaef1d9b13378b0dbf1be40c556ccf6886591f6b1b29ed790fa13606471` |
-| **StelaPrivacyPool** | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` |
 | LockerAccount (class hash) | `0x1a42b6c860becbb16fa5cd936576b98bca8e2ce26c3e279705cdf328ad4e8a5` |
 | Inscription NFT (MockERC721) | `0x04f2345306bf8ef1c8c1445661354ef08421aa092459445a5d6b46641237e943` |
 | SNIP-14 Registry (MockRegistry) | `0x0499c5c4929b22fbf1ebd8c500f570b2ec5bd8a43a84ee63e92bf8ac7f9f422b` |
@@ -274,29 +264,29 @@ Deployer: `0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310`
 
 StelaGenesis constructor takes `(owner, payment_token, mint_recipient, treasury, base_uri)`:
 
-- `treasury` receives 100 reserve NFTs (token IDs 1-100) at deployment — hardcoded as `TREASURY_RESERVE = 100`
-- Public mint is capped at 5 per wallet (`MAX_PER_WALLET = 5`), 400 NFTs available
+- `treasury` receives 50 reserve NFTs (token IDs 1-50) at deployment — hardcoded as `TREASURY_RESERVE = 50`
+- Public mint is capped at 5 per wallet (`MAX_PER_WALLET = 5`), 250 NFTs available (IDs 51-300)
+- Total supply: 300
+- Mint price: 1,000 STRK
 - Mint starts disabled; owner calls `set_mint_enabled(true)` then `renounce_ownership()`
-- After renounce: mint price (5,000 STRK), mint status, base URI, and admin mint are all permanently locked
+- After renounce: mint price (1,000 STRK), mint status, base URI, and admin mint are all permanently locked
 
 Deployment sequence:
-1. Deploy **StelaGenesis** — 100 NFTs auto-mint to treasury in constructor
-2. Deploy **FeeVault** with `(owner, genesis_address, total_nfts=500)`
-3. Call `stela.set_fee_vault(vault_address)` on the Stela contract
+1. Deploy **StelaGenesis** — 50 NFTs auto-mint to treasury in constructor
+2. Call `stela.set_treasury(treasury_address)` on the Stela contract
+3. Call `stela.set_genesis_contract(genesis_address)` on the Stela contract
 4. Call `genesis.set_mint_enabled(true)` to open public minting
-5. Call `genesis.set_mint_recipient(vault_address)` if mint revenue should go to vault
-6. Call `genesis.renounce_ownership()` — permanent, irreversible
-7. Call `fee_vault.renounce_ownership()` — permanent, irreversible
+5. Call `genesis.renounce_ownership()` — permanent, irreversible
 
 ### Post-Deployment
 
 - [ ] `set_treasury` if treasury differs from owner
 - [ ] `set_inscription_fee` set to desired value (or leave default 10 BPS)
 - [ ] `set_relayer_fee` set if off-chain settlement is enabled
-- [ ] `set_privacy_pool` set if privacy features are enabled
+- [ ] `set_genesis_contract` set if fee discount system is enabled
 - [ ] NFT contract grants minting permissions to StelaProtocol address
 - [ ] `is_paused()` returns false
-- [ ] Verify: `get_inscription_fee()`, `get_treasury()`, `get_relayer_fee()`, `get_privacy_pool()`
+- [ ] Verify: `get_inscription_fee()`, `get_treasury()`, `get_relayer_fee()`, `get_genesis_contract()`
 - [ ] Test full lifecycle on testnet: create, sign, repay, redeem
 
 ### Sepolia Testing
@@ -316,7 +306,7 @@ Deployment sequence:
 
 - **StelaProtocol** is not upgradeable. New deployment required for logic changes.
 - **LockerAccount** instances deployed via registry. Changing `implementation_hash` only affects new lockers.
-- **Configuration** (fees, treasury, registry, NFT, implementation hash, privacy pool) can be updated by owner without redeployment.
+- **Configuration** (fees, treasury, registry, NFT, implementation hash, genesis contract) can be updated by owner without redeployment.
 
 ---
 
@@ -364,22 +354,21 @@ This is NOT optional. Missing any step causes silent failures that are extremely
 After deploying a new Stela contract, call these admin functions from the `starkMfer` account:
 
 ```bash
-# 1. Link fee vault (enables Genesis fee distribution)
+# 1. Set treasury address
 sncast --account starkMfer invoke \
   --contract-address <NEW_STELA_ADDRESS> \
-  --function set_fee_vault \
-  --arguments <FEE_VAULT_ADDRESS>
+  --function set_treasury \
+  --arguments <TREASURY_ADDRESS>
 
-# 2. Link privacy pool (enables private lending)
+# 2. Link Genesis NFT (enables fee discounts)
 sncast --account starkMfer invoke \
   --contract-address <NEW_STELA_ADDRESS> \
-  --function set_privacy_pool \
-  --arguments <PRIVACY_POOL_ADDRESS>
+  --function set_genesis_contract \
+  --arguments <GENESIS_NFT_ADDRESS>
 
 # 3. Verify everything
-sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_fee_vault
-sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_privacy_pool
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_treasury
+sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_genesis_contract
 sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_inscription_fee
 sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_relayer_fee
-sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_treasury
 ```

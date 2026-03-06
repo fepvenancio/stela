@@ -19,7 +19,7 @@ openzeppelin_testing = "6.4.0"
 snforge_std = "0.56.0"
 
 [[target.starknet-contract]]
-allowed-libfuncs-list.name = "experimental"
+allowed-libfuncs-list.name = "audited"
 sierra = true
 casm = true
 

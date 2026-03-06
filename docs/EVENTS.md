@@ -4,7 +4,7 @@ All events emitted by StelaProtocol and LockerAccount contracts. Fields marked w
 
 ---
 
-## StelaProtocol Events (15)
+## StelaProtocol Events (12)
 
 ### Inscription Lifecycle Events (6)
 
@@ -44,7 +44,7 @@ struct InscriptionSigned {
 |---|---|---|---|
 | `inscription_id` | Yes | `u256` | Inscription being filled. |
 | `borrower` | Yes | `ContractAddress` | Borrower address. |
-| `lender` | Yes | `ContractAddress` | Lender address. Zero for private settlements. |
+| `lender` | Yes | `ContractAddress` | Lender address. |
 | `issued_debt_percentage` | No | `u256` | Percentage of debt filled in this call (BPS). |
 | `shares_minted` | No | `u256` | Number of ERC-1155 shares minted to the lender (before fee shares). |
 
@@ -116,7 +116,7 @@ struct SharesRedeemed {
 
 ---
 
-### Off-Chain Settlement Events (2)
+### Off-Chain Settlement Events (1)
 
 #### OrderSettled
 
@@ -136,29 +136,11 @@ struct OrderSettled {
 |---|---|---|---|
 | `inscription_id` | Yes | `u256` | Newly created inscription. |
 | `borrower` | Yes | `ContractAddress` | Borrower address. |
-| `lender` | Yes | `ContractAddress` | Lender address. Zero for private settlements. |
+| `lender` | Yes | `ContractAddress` | Lender address. |
 | `relayer` | No | `ContractAddress` | Relayer (caller) that submitted the transaction. |
 | `relayer_fee_amount` | No | `u256` | Total relayer fee across all debt assets. |
 
 **Note:** `settle()` also emits `InscriptionCreated` and `InscriptionSigned` in the same transaction.
-
-#### PrivateSettled
-
-Emitted when a private (anonymous) settlement occurs (via `settle()` when `lender_commitment != 0`).
-
-```cairo
-struct PrivateSettled {
-    #[key] inscription_id: u256,
-    #[key] lender_commitment: felt252,
-    shares_committed: u256,
-}
-```
-
-| Field | Indexed | Type | Description |
-|---|---|---|---|
-| `inscription_id` | Yes | `u256` | Inscription settled privately. |
-| `lender_commitment` | Yes | `felt252` | The privacy commitment inserted into the Merkle tree. |
-| `shares_committed` | No | `u256` | Number of shares committed (not minted as ERC-1155). |
 
 ---
 
@@ -217,30 +199,6 @@ struct OrdersBulkCancelled {
 |---|---|---|---|
 | `maker` | Yes | `ContractAddress` | Maker who set the new minimum nonce. |
 | `new_min_nonce` | No | `felt252` | New minimum nonce. Orders with nonce below this are invalid. |
-
----
-
-### Privacy Events (1)
-
-#### PrivateSharesRedeemed
-
-Emitted when shares are privately redeemed via ZK proof (via `private_redeem()`).
-
-```cairo
-struct PrivateSharesRedeemed {
-    #[key] inscription_id: u256,
-    #[key] nullifier: felt252,
-    shares: u256,
-    recipient: ContractAddress,
-}
-```
-
-| Field | Indexed | Type | Description |
-|---|---|---|---|
-| `inscription_id` | Yes | `u256` | Inscription whose shares are redeemed. |
-| `nullifier` | Yes | `felt252` | Nullifier used (prevents double-redemption). |
-| `shares` | No | `u256` | Number of shares redeemed. |
-| `recipient` | No | `ContractAddress` | Address that received the assets. |
 
 ---
 

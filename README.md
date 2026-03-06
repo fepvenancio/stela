@@ -14,7 +14,6 @@ Stela is a trustless peer-to-peer lending and OTC swap protocol. Borrowers creat
 - **Transferable Positions** — Both borrower NFTs and lender shares are transferable, enabling secondary markets for debt positions.
 - **Off-Chain Settlement** — Gasless order creation via SNIP-12 typed data signatures. A relayer settles matched orders on-chain.
 - **Signed Order Matching** — On-chain matching engine for signed orders with partial fills, min-fill thresholds, and batch cancellation.
-- **Privacy Pool** — Optional ZK-based private lending. Lenders can commit shares to a Merkle tree and redeem them privately without revealing their identity on-chain.
 
 ## How It Works
 
@@ -35,14 +34,6 @@ Stela is a trustless peer-to-peer lending and OTC swap protocol. Borrowers creat
 3. Relayer submits both signatures + asset arrays via settle()
 4. Contract verifies signatures, creates inscription, and fills it in one transaction
 5. Relayer receives a fee (configurable BPS) from the lender's debt transfer
-```
-
-### Private Lending Flow
-
-```
-1. Lender includes a lender_commitment in the LendOffer (Poseidon hash of owner, inscription_id, shares, salt)
-2. On settle(), shares are committed to the privacy pool Merkle tree instead of minting ERC1155
-3. Lender later calls private_redeem() with a ZK proof to claim assets anonymously
 ```
 
 ## Build & Test
@@ -66,12 +57,10 @@ src/
 │   ├── asset.cairo          # Asset struct & AssetType enum (ERC20, ERC721, ERC1155, ERC4626)
 │   ├── inscription.cairo    # InscriptionParams & StoredInscription structs
 │   ├── signed_order.cairo   # SignedOrder struct for matching engine (SNIP-12)
-│   └── private_redeem.cairo # PrivateRedeemRequest struct (cross-contract Serde compat)
 ├── interfaces/
 │   ├── istela.cairo         # IStelaProtocol — full protocol interface
 │   ├── ilocker.cairo        # ILockerAccount — locker interface
 │   ├── iregistry.cairo      # SNIP-14 registry interface
-│   ├── iprivacy_pool.cairo  # IPrivacyPool — privacy pool cross-contract interface
 │   └── ierc721_mintable.cairo
 ├── utils/
 │   └── share_math.cairo     # ERC-4626 style share conversion with virtual offset
@@ -131,11 +120,6 @@ The contract composes several OpenZeppelin Cairo components:
 - `cancel_order(order)` — Cancel a specific signed order
 - `cancel_orders_by_nonce(min_nonce)` — Batch-cancel all orders below a nonce
 
-**Privacy Pool:**
-- `private_redeem(request, proof)` — Redeem shares privately via ZK proof
-- `set_privacy_pool(privacy_pool)` — Set the privacy pool contract (admin)
-- `get_privacy_pool()` — Get the privacy pool contract address
-
 **Admin:**
 - `set_inscription_fee(fee)` / `set_relayer_fee(fee)` — Configure fees (BPS)
 - `set_treasury(treasury)` — Set fee recipient
@@ -149,7 +133,7 @@ The contract composes several OpenZeppelin Cairo components:
 The protocol uses SNIP-12 (StarkNet's EIP-712 equivalent) for off-chain signature verification:
 
 - **InscriptionOrder** — Signed by the borrower. Contains hashed asset arrays, counts, duration, deadline, multi_lender flag, and nonce.
-- **LendOffer** — Signed by the lender. References an order hash, specifies fill percentage and optional `lender_commitment` for private lending.
+- **LendOffer** — Signed by the lender. References an order hash and specifies fill percentage.
 - **SignedOrder** — For the matching engine. Contains maker, allowed_taker, inscription_id, bps, deadline, nonce, and min_fill_bps.
 
 Asset arrays are hashed with `hash_assets()` (Poseidon, length-prefixed) and verified against the actual arrays in `settle()`.
@@ -178,8 +162,6 @@ All contracts have permanently renounced admin ownership. See [DECENTRALIZATION.
 |----------|---------|-------|
 | StelaProtocol | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` | `0x0` (renounced) |
 | StelaGenesis NFT | `0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3` | `0x0` (renounced) |
-| FeeVault | `0x0111beaef1d9b13378b0dbf1be40c556ccf6886591f6b1b29ed790fa13606471` | `0x0` (renounced) |
-| StelaPrivacyPool | `0x002579e670f80cca558236c95762dd5b94ae017b6ed92df65b74b61b539cdec7` | Not linked |
 
 See `deployments/sepolia/deployedAddresses.json` for the full deployment manifest and `docs/deployment.md` for procedures.
 
@@ -194,7 +176,6 @@ The protocol includes guards against:
 - Gas griefing via unbounded asset arrays (capped at 10 per type)
 - SNIP-12 signature replay via NoncesComponent
 - Length-extension attacks on asset hash arrays (length-prefixed Poseidon)
-- Private multi-lender settlement (disallowed — one commitment per inscription)
 
 See `docs/security.md` for the full threat model and `docs/SPEC.md` for known limitations.
 
@@ -215,8 +196,6 @@ The protocol is fully permissionless. Anyone can run a relayer to settle matched
 - **[stela-relayer](https://github.com/fepvenancio/stela-relayer)** — Standalone relayer for settling matched orders (earn 5 BPS)
 - **[stela-sdk-ts](https://github.com/fepvenancio/stela-sdk-ts)** — TypeScript SDK for interacting with Stela contracts
 - **[stela-app](https://github.com/fepvenancio/stela-app)** — Next.js frontend, indexer, and settlement bot
-- **[stela-privacy](https://github.com/fepvenancio/stela-privacy)** — Privacy pool contract (Merkle tree, nullifier store, ZK verifier)
-
 ## License
 
 MIT

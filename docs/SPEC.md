@@ -147,14 +147,6 @@ On every fill:
 - Formula: `amount = tracked_balance * shares / total_supply`
 - Emits `SharesRedeemed` event
 
-### 7. Private Redeem
-- Callable by anyone (ZK proof provides authorization)
-- Conditions: inscription is repaid OR liquidated, privacy pool configured
-- Delegates ZK verification + nullifier spending to privacy pool
-- Deducts shares from total supply (shares were never minted as ERC-1155)
-- Distributes assets pro-rata to `request.recipient`
-- Emits `PrivateSharesRedeemed` event
-
 ## Share Math
 
 Shares use a virtual offset pattern (similar to ERC-4626) to prevent inflation attacks:
@@ -214,16 +206,13 @@ The order commits to the loan terms by including Poseidon hashes of the asset ar
 ```cairo
 struct LendOffer {
     order_hash: felt252,          // SNIP-12 message hash of the InscriptionOrder
-    lender: ContractAddress,      // Signer's address (zero for private settlement)
+    lender: ContractAddress,      // Signer's address
     issued_debt_percentage: u256, // Fill percentage in BPS (ignored for single-lender)
     nonce: felt252,               // Lender's nonce for replay protection
-    lender_commitment: felt252,   // Privacy commitment (0 = standard, non-zero = private)
 }
 ```
 
 The offer binds to a specific order by including its SNIP-12 message hash. The `u256` field (`issued_debt_percentage`) is encoded as a nested struct hash per SNIP-12: `Poseidon(U256_TYPE_HASH, low, high)`.
-
-When `lender_commitment != 0` and `lender == zero_address`, the settlement is private: shares are committed to the privacy pool's Merkle tree instead of minting ERC-1155, and debt tokens are pulled from the privacy pool instead of the lender.
 
 ### Asset Hashing via Poseidon
 
@@ -248,15 +237,13 @@ hash_assets(assets):
 3. **Asset count verification** -- array lengths match the counts in the order.
 4. **Asset validation** -- same rules as `create_inscription` (no zero addresses, no zero values, no NFTs in debt/interest, no NFT collateral for multi-lender).
 5. **Offer binding** -- `offer.order_hash == InscriptionOrder.get_message_hash(borrower)`.
-6. **Private detection** -- if `offer.lender_commitment != 0`, private mode is enabled. The lender must be zero address.
-7. **Borrower signature** -- verified via `ISRC6.is_valid_signature()` on the borrower's account.
-8. **Lender signature** -- verified via `ISRC6.is_valid_signature()` on the lender's account. Skipped for private settlement (anonymous lender).
-9. **Nonce consumption** -- borrower nonce consumed via `NoncesComponent.use_checked_nonce()`. Lender nonce consumed similarly unless private.
-10. **Inscription creation** -- a new inscription is created and filled atomically (NFT minted, TBA created if duration > 0, collateral locked, shares minted).
-11. **Privacy handling** -- if private: `pool.consume_deposit(commitment)`, `pool.insert_commitment(commitment)`. Shares committed to Merkle tree instead of ERC-1155 minting. Multi-lender disallowed.
-12. **Fee shares** -- protocol fee shares minted to treasury (always, even for private).
-13. **Debt transfer** -- standard: `transfer_from(lender, borrower, net_amount)` + `transfer_from(lender, relayer, fee_amount)`. Private: `pool.pull_deposit_tokens(token, borrower, net)` + `pool.pull_deposit_tokens(token, relayer, fee)`.
-14. **Events** -- `InscriptionCreated`, `InscriptionSigned`, `OrderSettled`. If private: also `PrivateSettled`.
+6. **Borrower signature** -- verified via `ISRC6.is_valid_signature()` on the borrower's account.
+7. **Lender signature** -- verified via `ISRC6.is_valid_signature()` on the lender's account.
+8. **Nonce consumption** -- borrower nonce consumed via `NoncesComponent.use_checked_nonce()`. Lender nonce consumed similarly.
+9. **Inscription creation** -- a new inscription is created and filled atomically (NFT minted, TBA created if duration > 0, collateral locked, shares minted).
+10. **Fee shares** -- protocol fee shares minted to treasury.
+11. **Debt transfer** -- `transfer_from(lender, borrower, net_amount)` + `transfer_from(lender, relayer, fee_amount)`.
+12. **Events** -- `InscriptionCreated`, `InscriptionSigned`, `OrderSettled`.
 
 ### NoncesComponent: Replay Protection
 
@@ -266,7 +253,7 @@ The protocol uses OpenZeppelin's `NoncesComponent` for per-address sequential no
 - `use_checked_nonce(address, nonce)` verifies that `nonce == current_nonce[address]`, then increments the stored nonce.
 - If the nonce does not match, the call reverts with `INVALID_NONCE`.
 - The current nonce for any address can be queried via `nonces(owner)`.
-- Nonces are consumed for both borrower and lender on every `settle()` call (except lender nonce is skipped for private settlement).
+- Nonces are consumed for both borrower and lender on every `settle()` call.
 
 This is separate from the `maker_min_nonce` used by the signed order matching engine (which uses a minimum-threshold model rather than sequential nonces).
 
@@ -322,43 +309,6 @@ Bulk cancellation. Sets `maker_min_nonce[caller] = min_nonce`. Any order with `n
 
 ---
 
-## Privacy Pool Integration
-
-The Stela core contract integrates with an external privacy pool contract for privacy-preserving lending.
-
-### IPrivacyPool Interface (from Stela's perspective)
-
-```cairo
-trait IPrivacyPool {
-    fn insert_commitment(ref self, commitment: felt252);
-    fn private_redeem(ref self, request: PrivateRedeemRequest, proof: Span<felt252>);
-    fn consume_deposit(ref self, commitment: felt252);
-    fn pull_deposit_tokens(ref self, token: ContractAddress, recipient: ContractAddress, amount: u256);
-}
-```
-
-### PrivateRedeemRequest Struct
-
-```cairo
-struct PrivateRedeemRequest {
-    root: felt252,                // Merkle root the proof was generated against
-    inscription_id: u256,         // Inscription whose shares are being redeemed
-    shares: u256,                 // Number of shares being redeemed
-    nullifier: felt252,           // Prevents double-spend
-    change_commitment: felt252,   // For partial redemption (0 if full)
-    recipient: ContractAddress,   // Recipient for redeemed assets
-}
-```
-
-This struct must match `stela_privacy::RedeemRequest` field-for-field for cross-contract Serde compatibility.
-
-### Admin
-
-- `set_privacy_pool(privacy_pool)` -- owner-only. Zero address disables privacy features.
-- `get_privacy_pool()` -- view. Returns the privacy pool contract address.
-
----
-
 ## View Function Reference
 
 All view functions are read-only and do not modify state.
@@ -389,7 +339,8 @@ All view functions are read-only and do not modify state.
 | `get_treasury` | `() -> ContractAddress` | `ContractAddress` | Treasury address for protocol fee shares. |
 | `is_paused` | `() -> bool` | `bool` | True if the protocol is paused. |
 | `nonces` | `(owner: ContractAddress) -> felt252` | `felt252` | Current sequential nonce for an address (used for SNIP-12 signing). |
-| `get_privacy_pool` | `() -> ContractAddress` | `ContractAddress` | Privacy pool address (zero = not configured). |
+| `get_genesis_contract` | `() -> ContractAddress` | `ContractAddress` | Genesis NFT contract address (for fee discounts). |
+| `get_volume_settled` | `(address: ContractAddress) -> u256` | `u256` | Settled volume for an address (used for discount tiers). |
 
 ### ERC-1155 (Inherited from OpenZeppelin)
 

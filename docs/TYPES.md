@@ -119,7 +119,7 @@ pub struct StoredInscription {
 | Field | Type | Description |
 |---|---|---|
 | `borrower` | `ContractAddress` | Borrower address. Zero if created by a lender and not yet filled. |
-| `lender` | `ContractAddress` | Lender address (last lender for multi-lender). Zero if created by borrower and not yet filled. For private settlements, remains zero. |
+| `lender` | `ContractAddress` | Lender address (last lender for multi-lender). Zero if created by borrower and not yet filled. |
 | `duration` | `u64` | Loan duration in seconds. `0` = instant swap. |
 | `deadline` | `u64` | Unix timestamp for fill expiry. |
 | `signed_at` | `u64` | Timestamp of first fill. `0` if unfilled. Repayment window starts here. |
@@ -196,24 +196,22 @@ pub struct LendOffer {
     pub lender: ContractAddress,
     pub issued_debt_percentage: u256,
     pub nonce: felt252,
-    pub lender_commitment: felt252,
 }
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `order_hash` | `felt252` | SNIP-12 message hash of the `InscriptionOrder` this offer is for. Binds the offer to exact loan terms. |
-| `lender` | `ContractAddress` | Signer's address. Zero address for private (anonymous) settlement. |
+| `lender` | `ContractAddress` | Signer's address. |
 | `issued_debt_percentage` | `u256` | Fill percentage in BPS. Ignored for single-lender orders (always 100%). |
-| `nonce` | `felt252` | Lender's sequential nonce. Skipped for private settlement. |
-| `lender_commitment` | `felt252` | Privacy commitment. `0` = standard settlement. Non-zero = private settlement: shares committed to privacy pool Merkle tree instead of ERC-1155 minting. |
+| `nonce` | `felt252` | Lender's sequential nonce. |
 
 **SNIP-12 type hash (includes u256 sub-type):**
 ```
-"LendOffer"("order_hash":"felt","lender":"ContractAddress","issued_debt_percentage":"u256","nonce":"felt","lender_commitment":"felt")"u256"("low":"u128","high":"u128")
+"LendOffer"("order_hash":"felt","lender":"ContractAddress","issued_debt_percentage":"u256","nonce":"felt")"u256"("low":"u128","high":"u128")
 ```
 
-**StructHash implementation:** The `u256` field (`issued_debt_percentage`) is encoded as a nested struct hash per SNIP-12: `Poseidon(U256_TYPE_HASH, low, high)`. The `lender_commitment` field is hashed directly as a `felt252`.
+**StructHash implementation:** The `u256` field (`issued_debt_percentage`) is encoded as a nested struct hash per SNIP-12: `Poseidon(U256_TYPE_HASH, low, high)`.
 
 ---
 
@@ -255,33 +253,3 @@ pub struct SignedOrder {
 
 **MUST NOT change after any signature is issued** -- any field addition or reordering invalidates all outstanding signed orders.
 
----
-
-## PrivateRedeemRequest (struct)
-
-**File:** `src/types/private_redeem.cairo`
-
-Request for private (ZK-verified) share redemption. Used in `private_redeem()`.
-
-```cairo
-#[derive(Copy, Drop, Serde)]
-pub struct PrivateRedeemRequest {
-    pub root: felt252,
-    pub inscription_id: u256,
-    pub shares: u256,
-    pub nullifier: felt252,
-    pub change_commitment: felt252,
-    pub recipient: ContractAddress,
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `root` | `felt252` | Merkle root the ZK proof was generated against. The privacy pool validates this against its root history. |
-| `inscription_id` | `u256` | The inscription whose shares are being redeemed. |
-| `shares` | `u256` | Number of shares being redeemed. Deducted from `total_supply` (not from ERC-1155, since private shares were never minted). |
-| `nullifier` | `felt252` | Prevents double-spend. The privacy pool tracks spent nullifiers. |
-| `change_commitment` | `felt252` | For partial redemption: a new commitment for the remaining shares. `0` if full redemption. |
-| `recipient` | `ContractAddress` | Address that receives the redeemed assets (debt+interest if repaid, collateral if liquidated). |
-
-**Cross-contract compatibility:** This struct must match `stela_privacy::types::note::RedeemRequest` field-for-field so that Serde encoding is compatible across contracts.
