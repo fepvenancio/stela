@@ -46,6 +46,11 @@ pub mod Errors {
     pub const ORDER_EXPIRED: felt252 = 'STELA: order expired';
     pub const INVALID_ORDER: felt252 = 'STELA: invalid order';
 
+    // --- Batch settlement ---
+    pub const BATCH_TOO_LARGE: felt252 = 'STELA: batch too large';
+    pub const BATCH_HASH_MISMATCH: felt252 = 'STELA: batch hash mismatch';
+    pub const BATCH_LENGTH_MISMATCH: felt252 = 'STELA: batch len mismatch';
+
     // --- Signed order matching engine ---
     pub const ORDER_CANCELLED: felt252 = 'STELA: order cancelled';
     pub const UNAUTHORIZED_TAKER: felt252 = 'STELA: unauthorized taker';

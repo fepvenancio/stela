@@ -98,6 +98,62 @@ impl LendOfferStructHash of StructHash<LendOffer> {
     }
 }
 
+/// A single entry in a batch lend offer, binding an order hash to a BPS allocation.
+#[derive(Copy, Drop, Serde)]
+pub struct BatchEntry {
+    pub order_hash: felt252,
+    pub bps: u256,
+}
+
+/// Hash an array of BatchEntry into a single felt252 using Poseidon.
+/// Format: Poseidon(count, order_hash_1, u256_hash(bps_1), order_hash_2, u256_hash(bps_2), ...)
+pub fn hash_batch_entries(entries: Span<BatchEntry>) -> felt252 {
+    let mut hash_state = PoseidonTrait::new();
+    hash_state = hash_state.update_with(entries.len());
+    let mut i: u32 = 0;
+    while i < entries.len() {
+        let entry = *entries.at(i);
+        let bps_hash = PoseidonTrait::new()
+            .update_with(U256_TYPE_HASH)
+            .update_with(entry.bps.low)
+            .update_with(entry.bps.high)
+            .finalize();
+        hash_state = hash_state.update_with(entry.order_hash).update_with(bps_hash);
+        i += 1;
+    };
+    hash_state.finalize()
+}
+
+/// Off-chain batch lend offer signed by the lender (SNIP-12 typed data).
+/// References multiple orders via a single batch_hash, enabling atomic multi-settlement.
+#[derive(Copy, Drop, Hash, Serde)]
+pub struct BatchLendOffer {
+    /// Poseidon hash of the batch entries array (order_hash + bps pairs).
+    pub batch_hash: felt252,
+    /// Number of orders in the batch.
+    pub count: u32,
+    /// The lender's address (signer of this offer).
+    pub lender: ContractAddress,
+    /// The starting nonce for this batch (consumes start_nonce through start_nonce + count - 1).
+    pub start_nonce: felt252,
+}
+
+const BATCH_LEND_OFFER_TYPE_HASH: felt252 = selector!(
+    "\"BatchLendOffer\"(\"batch_hash\":\"felt\",\"count\":\"u128\",\"lender\":\"ContractAddress\",\"start_nonce\":\"felt\")",
+);
+
+impl BatchLendOfferStructHash of StructHash<BatchLendOffer> {
+    fn hash_struct(self: @BatchLendOffer) -> felt252 {
+        PoseidonTrait::new()
+            .update_with(BATCH_LEND_OFFER_TYPE_HASH)
+            .update_with(*self.batch_hash)
+            .update_with(*self.count)
+            .update_with(*self.lender)
+            .update_with(*self.start_nonce)
+            .finalize()
+    }
+}
+
 /// Convert AssetType enum to felt252 for hashing.
 fn asset_type_to_felt(asset_type: AssetType) -> felt252 {
     match asset_type {

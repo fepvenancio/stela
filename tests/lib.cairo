@@ -13,4 +13,5 @@ mod test_redeem;
 mod test_repay;
 mod test_security;
 mod test_sign_inscription;
+mod test_batch_settle;
 mod test_utils;

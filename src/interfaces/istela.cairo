@@ -67,6 +67,22 @@ pub trait IStelaProtocol<TContractState> {
         lender_sig: Array<felt252>,
     );
 
+    /// Batch-settle multiple off-chain signed orders atomically with a single lender signature.
+    /// The lender signs a BatchLendOffer referencing all orders by their hashes.
+    /// Each order has its own borrower signature. Nonces are consumed sequentially
+    /// from batch_offer.start_nonce through start_nonce + count - 1.
+    fn batch_settle(
+        ref self: TContractState,
+        orders: Array<crate::snip12::InscriptionOrder>,
+        debt_assets_flat: Array<Asset>,
+        interest_assets_flat: Array<Asset>,
+        collateral_assets_flat: Array<Asset>,
+        borrower_sigs: Array<Array<felt252>>,
+        batch_offer: crate::snip12::BatchLendOffer,
+        lender_sig: Array<felt252>,
+        bps_list: Array<u256>,
+    );
+
     // --- Signed order matching engine ---
 
     /// Fill a signed order. On first fill, verifies the maker's SNIP-12 signature and

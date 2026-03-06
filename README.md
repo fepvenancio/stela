@@ -33,7 +33,7 @@ Stela is a trustless peer-to-peer lending and OTC swap protocol. Borrowers creat
 2. Lender signs a LendOffer referencing the order hash
 3. Relayer submits both signatures + asset arrays via settle()
 4. Contract verifies signatures, creates inscription, and fills it in one transaction
-5. Relayer receives a fee (configurable BPS) from the lender's debt transfer
+5. Relayer receives a fee (0.05%) from the lender's debt transfer
 ```
 
 ## Build & Test
@@ -42,7 +42,7 @@ Requires [Scarb](https://docs.swmansion.com/scarb/download.html) and [StarkNet F
 
 ```bash
 scarb build          # Compile contracts
-snforge test         # Run all tests (76 tests)
+snforge test         # Run all tests (147 tests)
 ```
 
 ## Project Structure
@@ -114,6 +114,7 @@ The contract composes several OpenZeppelin Cairo components:
 
 **Off-Chain Settlement:**
 - `settle(order, debt_assets, interest_assets, collateral_assets, borrower_sig, offer, lender_sig)` — Settle a matched order pair in one transaction
+- `batch_settle(orders[], debt_assets[], interest_assets[], collateral_assets[], borrower_sigs[], batch_offer, lender_sig)` — Settle multiple matched orders atomically with a single lender signature (BatchLendOffer SNIP-12 type)
 
 **Signed Order Matching:**
 - `fill_signed_order(order, signature, fill_bps)` — Fill a signed order (partial fills supported)
@@ -134,6 +135,7 @@ The protocol uses SNIP-12 (StarkNet's EIP-712 equivalent) for off-chain signatur
 
 - **InscriptionOrder** — Signed by the borrower. Contains hashed asset arrays, counts, duration, deadline, multi_lender flag, and nonce.
 - **LendOffer** — Signed by the lender. References an order hash and specifies fill percentage.
+- **BatchLendOffer** — Signed by the lender. References multiple order hashes for atomic multi-order settlement via `batch_settle()`.
 - **SignedOrder** — For the matching engine. Contains maker, allowed_taker, inscription_id, bps, deadline, nonce, and min_fill_bps.
 
 Asset arrays are hashed with `hash_assets()` (Poseidon, length-prefixed) and verified against the actual arrays in `settle()`.
@@ -160,8 +162,8 @@ All contracts have permanently renounced admin ownership. See [DECENTRALIZATION.
 
 | Contract | Address | Owner |
 |----------|---------|-------|
-| StelaProtocol | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` | `0x0` (renounced) |
-| StelaGenesis NFT | `0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3` | `0x0` (renounced) |
+| StelaProtocol | `0x012998e49cc8205d0bb56b5c10202bd32994091b1cacdb7bcbd03dc6781d4974` | `0x0` (renounced) |
+| StelaGenesis NFT | `0x0265ea52ffbf1b7e1a029b94fe1a2023899dd0bc02eb1f11c9b04ea90e957d28` | `0x0` (renounced) |
 
 See `deployments/sepolia/deployedAddresses.json` for the full deployment manifest and `docs/deployment.md` for procedures.
 
@@ -189,11 +191,11 @@ See `docs/security.md` for the full threat model and `docs/SPEC.md` for known li
 
 ## Running a Relayer
 
-The protocol is fully permissionless. Anyone can run a relayer to settle matched orders and earn **5 BPS** on every settlement. See the [stela-relayer](https://github.com/fepvenancio/stela-relayer) repo for a standalone implementation.
+The protocol is fully permissionless. Anyone can run a relayer to settle matched orders and earn **0.05%** on every settlement. See the [stela-relayer](https://github.com/fepvenancio/stela-relayer) repo for a standalone implementation.
 
 ## Related Repositories
 
-- **[stela-relayer](https://github.com/fepvenancio/stela-relayer)** — Standalone relayer for settling matched orders (earn 5 BPS)
+- **[stela-relayer](https://github.com/fepvenancio/stela-relayer)** — Standalone relayer for settling matched orders (earn 0.05%)
 - **[stela-sdk-ts](https://github.com/fepvenancio/stela-sdk-ts)** — TypeScript SDK for interacting with Stela contracts
 - **[stela-app](https://github.com/fepvenancio/stela-app)** — Next.js frontend, indexer, and settlement bot
 ## License

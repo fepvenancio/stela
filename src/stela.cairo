@@ -11,7 +11,7 @@ pub mod StelaProtocol {
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
     use openzeppelin_utils::cryptography::nonces::NoncesComponent;
     use openzeppelin_utils::cryptography::snip12::{OffchainMessageHash, StructHash};
-    use crate::snip12::{InscriptionOrder, LendOffer, hash_assets};
+    use crate::snip12::{InscriptionOrder, LendOffer, BatchLendOffer, BatchEntry, hash_assets, hash_batch_entries};
     use crate::types::signed_order::SignedOrder;
 
     // Token dispatchers from openzeppelin_interfaces
@@ -734,186 +734,127 @@ pub mod StelaProtocol {
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
-            let timestamp = get_block_timestamp();
-
-            // 1. Check order.deadline hasn't passed
-            assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED);
-
-            // 2. Verify asset hashes match the order
-            assert(hash_assets(debt_assets.span()) == order.debt_hash, Errors::INVALID_ORDER);
-            assert(hash_assets(interest_assets.span()) == order.interest_hash, Errors::INVALID_ORDER);
-            assert(hash_assets(collateral_assets.span()) == order.collateral_hash, Errors::INVALID_ORDER);
-
-            // Verify asset counts match
-            assert(debt_assets.len() == order.debt_count, Errors::INVALID_ORDER);
-            assert(interest_assets.len() == order.interest_count, Errors::INVALID_ORDER);
-            assert(collateral_assets.len() == order.collateral_count, Errors::INVALID_ORDER);
-
-            // Validate asset array lengths don't exceed cap
-            assert(debt_assets.len() > 0, Errors::ZERO_DEBT_ASSETS);
-            assert(collateral_assets.len() > 0, Errors::ZERO_COLLATERAL);
-            assert(debt_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
-            assert(collateral_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
-            assert(interest_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
-
-            // Validate individual asset values
-            self._validate_assets(debt_assets.span());
-            self._validate_assets(collateral_assets.span());
-            self._validate_assets(interest_assets.span());
-
-            // ERC721 cannot be used as debt or interest
-            self._validate_no_nfts(debt_assets.span());
-            self._validate_no_nfts(interest_assets.span());
-
-            // H2: ERC721 collateral cannot be used with multi-lender inscriptions
-            if order.multi_lender {
-                self._validate_no_nfts(collateral_assets.span());
-            }
 
             // Verify offer references this order
             let order_msg_hash = order.get_message_hash(order.borrower);
             assert(offer.order_hash == order_msg_hash, Errors::INVALID_ORDER);
 
-            // 3. Verify borrower signature via ISRC6
-            let borrower_account = ISRC6Dispatcher { contract_address: order.borrower };
-            let borrower_valid = borrower_account.is_valid_signature(order_msg_hash, borrower_sig);
-            assert(borrower_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
-
-            // 4. Verify lender signature via ISRC6
+            // Verify lender signature via ISRC6
             let lender_msg_hash = offer.get_message_hash(offer.lender);
             let lender_account = ISRC6Dispatcher { contract_address: offer.lender };
             let lender_valid = lender_account.is_valid_signature(lender_msg_hash, lender_sig);
             assert(lender_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
 
-            // 5. Consume nonces
-            self.nonces.use_checked_nonce(order.borrower, order.nonce);
+            // Consume lender nonce
             self.nonces.use_checked_nonce(offer.lender, offer.nonce);
 
-            // 6. Create inscription
-            let borrower = order.borrower;
-            let lender = offer.lender;
-
-            // Prevent self-settlement (borrower == lender)
-            assert(borrower != lender, Errors::SELF_TRADE_NOT_ALLOWED);
-
-            let is_swap = order.duration == 0;
-
-            // Compute inscription ID
-            let inscription_id = self
-                ._compute_inscription_id(
-                    borrower, lender, order.duration, order.deadline, timestamp, debt_assets.span(),
+            // Delegate to shared settlement logic
+            self
+                ._settle_single(
+                    order,
+                    debt_assets.span(),
+                    interest_assets.span(),
+                    collateral_assets.span(),
+                    borrower_sig,
+                    offer.lender,
+                    offer.issued_debt_percentage,
+                    caller,
                 );
 
-            // Check inscription doesn't already exist (C3)
-            let existing = self.inscriptions.read(inscription_id);
-            assert(existing.borrower.is_zero() && existing.lender.is_zero(), Errors::INSCRIPTION_EXISTS);
+            self.reentrancy_guard.end();
+        }
 
-            // Determine actual debt percentage
-            let actual_percentage = if order.multi_lender {
-                assert(offer.issued_debt_percentage > 0, Errors::ZERO_SHARES);
-                assert(offer.issued_debt_percentage <= MAX_BPS, Errors::EXCEEDS_MAX_BPS);
-                offer.issued_debt_percentage
-            } else {
-                MAX_BPS
+        /// Batch-settle multiple off-chain signed orders atomically with a single lender signature.
+        fn batch_settle(
+            ref self: ContractState,
+            orders: Array<InscriptionOrder>,
+            debt_assets_flat: Array<Asset>,
+            interest_assets_flat: Array<Asset>,
+            collateral_assets_flat: Array<Asset>,
+            borrower_sigs: Array<Array<felt252>>,
+            batch_offer: BatchLendOffer,
+            lender_sig: Array<felt252>,
+            bps_list: Array<u256>,
+        ) {
+            self.pausable.assert_not_paused();
+            self.reentrancy_guard.start();
+
+            let caller = get_caller_address();
+            let count = orders.len();
+
+            // Validate array lengths match
+            assert(count == borrower_sigs.len(), Errors::BATCH_LENGTH_MISMATCH);
+            assert(count == bps_list.len(), Errors::BATCH_LENGTH_MISMATCH);
+            assert(batch_offer.count == count, Errors::BATCH_LENGTH_MISMATCH);
+
+            // Enforce maximum batch size
+            const MAX_BATCH_SIZE: u32 = 10;
+            assert(count <= MAX_BATCH_SIZE, Errors::BATCH_TOO_LARGE);
+
+            // Compute batch entries and verify batch_hash
+            let orders_span = orders.span();
+            let bps_span = bps_list.span();
+            let mut batch_entries: Array<BatchEntry> = array![];
+            let mut i: u32 = 0;
+            while i < count {
+                let order = *orders_span.at(i);
+                let order_msg_hash = order.get_message_hash(order.borrower);
+                batch_entries.append(BatchEntry { order_hash: order_msg_hash, bps: *bps_span.at(i) });
+                i += 1;
+            };
+            let computed_hash = hash_batch_entries(batch_entries.span());
+            assert(computed_hash == batch_offer.batch_hash, Errors::BATCH_HASH_MISMATCH);
+
+            // Verify lender signature ONCE on the BatchLendOffer
+            let lender_msg_hash = batch_offer.get_message_hash(batch_offer.lender);
+            let lender_account = ISRC6Dispatcher { contract_address: batch_offer.lender };
+            let lender_valid = lender_account.is_valid_signature(lender_msg_hash, lender_sig);
+            assert(lender_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+
+            // Consume lender nonces: start_nonce through start_nonce + count - 1
+            let start_nonce_u256: u256 = batch_offer.start_nonce.into();
+            let mut n: u32 = 0;
+            while n < count {
+                let nonce_felt: felt252 = (start_nonce_u256 + n.into()).try_into().unwrap();
+                self.nonces.use_checked_nonce(batch_offer.lender, nonce_felt);
+                n += 1;
             };
 
-            // Store inscription
-            let stored = StoredInscription {
-                borrower,
-                lender,
-                duration: order.duration,
-                deadline: order.deadline,
-                signed_at: timestamp,
-                issued_debt_percentage: actual_percentage,
-                is_repaid: false,
-                liquidated: is_swap, // Instant swap: mark as liquidated for immediate redemption
-                multi_lender: order.multi_lender,
-                debt_asset_count: debt_assets.len(),
-                interest_asset_count: interest_assets.len(),
-                collateral_asset_count: collateral_assets.len(),
+            // Split flat asset arrays and settle each order
+            let debt_flat_span = debt_assets_flat.span();
+            let interest_flat_span = interest_assets_flat.span();
+            let collateral_flat_span = collateral_assets_flat.span();
+            let borrower_sigs_span = borrower_sigs.span();
+
+            let mut debt_offset: u32 = 0;
+            let mut interest_offset: u32 = 0;
+            let mut collateral_offset: u32 = 0;
+            let mut j: u32 = 0;
+            while j < count {
+                let order = *orders_span.at(j);
+
+                // Slice asset arrays for this order
+                let debt_slice = debt_flat_span.slice(debt_offset, order.debt_count);
+                let interest_slice = interest_flat_span.slice(interest_offset, order.interest_count);
+                let collateral_slice = collateral_flat_span.slice(collateral_offset, order.collateral_count);
+
+                self
+                    ._settle_single(
+                        order,
+                        debt_slice,
+                        interest_slice,
+                        collateral_slice,
+                        borrower_sigs_span.at(j).clone(),
+                        batch_offer.lender,
+                        *bps_span.at(j),
+                        caller,
+                    );
+
+                debt_offset += order.debt_count;
+                interest_offset += order.interest_count;
+                collateral_offset += order.collateral_count;
+                j += 1;
             };
-            self.inscriptions.write(inscription_id, stored);
-
-            // Store assets
-            self._store_debt_assets(inscription_id, debt_assets.span());
-            self._store_interest_assets(inscription_id, interest_assets.span());
-            self._store_collateral_assets(inscription_id, collateral_assets.span());
-
-            // Mint inscription NFT to borrower
-            let nft_contract = self.inscriptions_nft.read();
-            let nft = IERC721MintableDispatcher { contract_address: nft_contract };
-            nft.mint(borrower, inscription_id);
-
-            if is_swap {
-                // Instant swap: transfer collateral directly to contract (no locker)
-                self
-                    ._collect_collateral_for_swap(
-                        borrower, inscription_id, collateral_assets.len(), actual_percentage, true,
-                    );
-            } else {
-                // Standard loan: create TBA locker and lock collateral
-                let registry_contract = self.registry.read();
-                let registry = IRegistryDispatcher { contract_address: registry_contract };
-                let locker_addr = registry
-                    .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
-                assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
-                self.lockers.write(inscription_id, locker_addr);
-                self.is_locker.write(locker_addr, true);
-
-                self
-                    ._lock_collateral(
-                        borrower, locker_addr, inscription_id, collateral_assets.len(), actual_percentage, true,
-                    );
-            }
-
-            // Calculate shares
-            let shares = convert_to_shares(actual_percentage, 0, 0);
-
-            // Calculate and mint fee shares
-            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
-            let total_new_shares = shares + fee_shares;
-
-            // Standard settlement: mint ERC1155 shares to lender
-            self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
-
-            // Mint fee shares to treasury
-            if fee_shares > 0 {
-                let treasury = self.treasury.read();
-                self
-                    .erc1155
-                    .update(Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span());
-            }
-
-            // Update total supply
-            self.total_supply.write(inscription_id, total_new_shares);
-
-            // Issue debt with fee (uses discount model)
-            let total_relayer_fee = self
-                ._issue_debt_with_fee(
-                    lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, order.duration,
-                );
-
-            // Track volume for the lender (for discount tiers)
-            self._track_volume(lender, inscription_id, debt_assets.len(), actual_percentage);
-
-            // Emit events
-            self.emit(InscriptionCreated { inscription_id, creator: borrower, is_borrow: true });
-            self
-                .emit(
-                    InscriptionSigned {
-                        inscription_id,
-                        borrower,
-                        lender,
-                        issued_debt_percentage: actual_percentage,
-                        shares_minted: shares,
-                    },
-                );
-            self
-                .emit(
-                    OrderSettled {
-                        inscription_id, borrower, lender, relayer: caller, relayer_fee_amount: total_relayer_fee,
-                    },
-                );
 
             self.reentrancy_guard.end();
         }
@@ -1088,6 +1029,189 @@ pub mod StelaProtocol {
 
     #[generate_trait]
     impl InternalImpl of InternalTrait {
+        /// Shared settlement logic for a single order. Used by both settle() and batch_settle().
+        /// Does NOT handle reentrancy guard, pause checks, or lender signature verification.
+        /// The caller is responsible for those.
+        fn _settle_single(
+            ref self: ContractState,
+            order: InscriptionOrder,
+            debt_assets: Span<Asset>,
+            interest_assets: Span<Asset>,
+            collateral_assets: Span<Asset>,
+            borrower_sig: Array<felt252>,
+            lender: ContractAddress,
+            lender_bps: u256,
+            caller: ContractAddress,
+        ) {
+            let timestamp = get_block_timestamp();
+
+            // 1. Check order.deadline hasn't passed
+            assert(timestamp <= order.deadline, Errors::ORDER_EXPIRED);
+
+            // 2. Verify asset hashes match the order
+            assert(hash_assets(debt_assets) == order.debt_hash, Errors::INVALID_ORDER);
+            assert(hash_assets(interest_assets) == order.interest_hash, Errors::INVALID_ORDER);
+            assert(hash_assets(collateral_assets) == order.collateral_hash, Errors::INVALID_ORDER);
+
+            // Verify asset counts match
+            assert(debt_assets.len() == order.debt_count, Errors::INVALID_ORDER);
+            assert(interest_assets.len() == order.interest_count, Errors::INVALID_ORDER);
+            assert(collateral_assets.len() == order.collateral_count, Errors::INVALID_ORDER);
+
+            // Validate asset array lengths don't exceed cap
+            assert(debt_assets.len() > 0, Errors::ZERO_DEBT_ASSETS);
+            assert(collateral_assets.len() > 0, Errors::ZERO_COLLATERAL);
+            assert(debt_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
+            assert(collateral_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
+            assert(interest_assets.len() <= MAX_ASSETS, Errors::TOO_MANY_ASSETS);
+
+            // Validate individual asset values
+            self._validate_assets(debt_assets);
+            self._validate_assets(collateral_assets);
+            self._validate_assets(interest_assets);
+
+            // ERC721 cannot be used as debt or interest
+            self._validate_no_nfts(debt_assets);
+            self._validate_no_nfts(interest_assets);
+
+            // H2: ERC721 collateral cannot be used with multi-lender inscriptions
+            if order.multi_lender {
+                self._validate_no_nfts(collateral_assets);
+            }
+
+            // Verify borrower signature via ISRC6
+            let order_msg_hash = order.get_message_hash(order.borrower);
+            let borrower_account = ISRC6Dispatcher { contract_address: order.borrower };
+            let borrower_valid = borrower_account.is_valid_signature(order_msg_hash, borrower_sig);
+            assert(borrower_valid == starknet::VALIDATED, Errors::INVALID_SIGNATURE);
+
+            // Consume borrower nonce
+            self.nonces.use_checked_nonce(order.borrower, order.nonce);
+
+            // Prevent self-settlement (borrower == lender)
+            let borrower = order.borrower;
+            assert(borrower != lender, Errors::SELF_TRADE_NOT_ALLOWED);
+
+            let is_swap = order.duration == 0;
+
+            // Compute inscription ID
+            let inscription_id = self
+                ._compute_inscription_id(
+                    borrower, lender, order.duration, order.deadline, timestamp, debt_assets,
+                );
+
+            // Check inscription doesn't already exist (C3)
+            let existing = self.inscriptions.read(inscription_id);
+            assert(existing.borrower.is_zero() && existing.lender.is_zero(), Errors::INSCRIPTION_EXISTS);
+
+            // Determine actual debt percentage
+            let actual_percentage = if order.multi_lender {
+                assert(lender_bps > 0, Errors::ZERO_SHARES);
+                assert(lender_bps <= MAX_BPS, Errors::EXCEEDS_MAX_BPS);
+                lender_bps
+            } else {
+                MAX_BPS
+            };
+
+            // Store inscription
+            let stored = StoredInscription {
+                borrower,
+                lender,
+                duration: order.duration,
+                deadline: order.deadline,
+                signed_at: timestamp,
+                issued_debt_percentage: actual_percentage,
+                is_repaid: false,
+                liquidated: is_swap, // Instant swap: mark as liquidated for immediate redemption
+                multi_lender: order.multi_lender,
+                debt_asset_count: debt_assets.len(),
+                interest_asset_count: interest_assets.len(),
+                collateral_asset_count: collateral_assets.len(),
+            };
+            self.inscriptions.write(inscription_id, stored);
+
+            // Store assets
+            self._store_debt_assets(inscription_id, debt_assets);
+            self._store_interest_assets(inscription_id, interest_assets);
+            self._store_collateral_assets(inscription_id, collateral_assets);
+
+            // Mint inscription NFT to borrower
+            let nft_contract = self.inscriptions_nft.read();
+            let nft = IERC721MintableDispatcher { contract_address: nft_contract };
+            nft.mint(borrower, inscription_id);
+
+            if is_swap {
+                // Instant swap: transfer collateral directly to contract (no locker)
+                self
+                    ._collect_collateral_for_swap(
+                        borrower, inscription_id, collateral_assets.len(), actual_percentage, true,
+                    );
+            } else {
+                // Standard loan: create TBA locker and lock collateral
+                let registry_contract = self.registry.read();
+                let registry = IRegistryDispatcher { contract_address: registry_contract };
+                let locker_addr = registry
+                    .create_account(self.implementation_hash.read(), nft_contract, inscription_id);
+                assert(!locker_addr.is_zero(), Errors::INVALID_ADDRESS);
+                self.lockers.write(inscription_id, locker_addr);
+                self.is_locker.write(locker_addr, true);
+
+                self
+                    ._lock_collateral(
+                        borrower, locker_addr, inscription_id, collateral_assets.len(), actual_percentage, true,
+                    );
+            }
+
+            // Calculate shares
+            let shares = convert_to_shares(actual_percentage, 0, 0);
+
+            // Calculate and mint fee shares
+            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
+            let total_new_shares = shares + fee_shares;
+
+            // Standard settlement: mint ERC1155 shares to lender
+            self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
+
+            // Mint fee shares to treasury
+            if fee_shares > 0 {
+                let treasury = self.treasury.read();
+                self
+                    .erc1155
+                    .update(Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span());
+            }
+
+            // Update total supply
+            self.total_supply.write(inscription_id, total_new_shares);
+
+            // Issue debt with fee (uses discount model)
+            let total_relayer_fee = self
+                ._issue_debt_with_fee(
+                    lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, order.duration,
+                );
+
+            // Track volume for the lender (for discount tiers)
+            self._track_volume(lender, inscription_id, debt_assets.len(), actual_percentage);
+
+            // Emit events
+            self.emit(InscriptionCreated { inscription_id, creator: borrower, is_borrow: true });
+            self
+                .emit(
+                    InscriptionSigned {
+                        inscription_id,
+                        borrower,
+                        lender,
+                        issued_debt_percentage: actual_percentage,
+                        shares_minted: shares,
+                    },
+                );
+            self
+                .emit(
+                    OrderSettled {
+                        inscription_id, borrower, lender, relayer: caller, relayer_fee_amount: total_relayer_fee,
+                    },
+                );
+        }
+
         /// Core inscription fill logic shared by sign_inscription and fill_signed_order.
         fn _fill_inscription(
             ref self: ContractState, inscription_id: u256, issued_debt_percentage: u256, filler: ContractAddress,

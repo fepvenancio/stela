@@ -3,12 +3,12 @@
   "deployer": "0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310",
   "contracts": {
     "StelaProtocol": {
-      "address": "0x042e955a1905261e7afdba17518506c8f275759e1195bc19e2eca908658bf8e9",
-      "classHash": "0x11c91393c9ac1471847a4c9cbd1a40b02354920e8cd880066069e19b9f52182",
-      "settleFee": "20 BPS (5 relayer + 15 treasury)",
-      "redeemFee": "10 BPS (all treasury)",
-      "note": "Treasury reserve (50 NFTs), per-wallet cap (5), ownership renounced",
-      "previousAddress": "0x038fb9a3bbf84aef962c70bc0ed15744f4f3088bae73bed99031b6f2b7cfab01"
+      "address": "0x012998e49cc8205d0bb56b5c10202bd32994091b1cacdb7bcbd03dc6781d4974",
+      "classHash": "0x69f0c72e9ce8596bbaa44cad848d715f41ab6f41bcc380e5145ecb2916e0740",
+      "settleFee": "0.20% (0.05% relayer + 0.15% treasury)",
+      "redeemFee": "0.10% (all treasury)",
+      "note": "batch_settle support, treasury reserve (50 NFTs), per-wallet cap (5)",
+      "previousAddress": "0x0400ed08d0507b1f229c3283ecfc8567fb7240a7d0d99d5af9167993c51d062e"
     },
     "StelaGenesis": {
       "address": "0x02405de15c17aaf863bcf23c22706d73d142c8a81df29de9ef129666655847ca",
