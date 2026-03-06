@@ -41,12 +41,15 @@ pub mod StelaProtocol {
     const MAX_ASSETS: u32 = 10;
 
     // Fee constants (in BPS)
-    const SETTLE_FEE_BPS: u256 = 20;          // Total fee on settle (5 relayer + 15 treasury)
+    const SETTLE_FEE_BPS: u256 = 20;          // Total fee on settle/lending (5 relayer + 15 treasury)
+    const SWAP_FEE_BPS: u256 = 10;             // Total fee on swap/duration=0 (5 relayer + 5 treasury)
     const REDEEM_FEE_BPS: u256 = 10;           // Total fee on redeem (10 treasury)
     const RELAYER_BPS: u256 = 5;               // Relayer portion (never discounted)
-    const SETTLE_TREASURY_BASE: u256 = 15;     // Treasury base on settle
+    const SETTLE_TREASURY_BASE: u256 = 15;     // Treasury base on settle (lending)
+    const SWAP_TREASURY_BASE: u256 = 5;        // Treasury base on swap (duration=0)
     const REDEEM_TREASURY_BASE: u256 = 10;     // Treasury base on redeem
     const SETTLE_TREASURY_FLOOR: u256 = 10;    // Minimum treasury on settle after discount
+    const SWAP_TREASURY_FLOOR: u256 = 3;       // Minimum treasury on swap after discount
     const REDEEM_TREASURY_FLOOR: u256 = 5;     // Minimum treasury on redeem after discount
 
     // Discount constants
@@ -887,7 +890,7 @@ pub mod StelaProtocol {
             // Issue debt with fee (uses discount model)
             let total_relayer_fee = self
                 ._issue_debt_with_fee(
-                    lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage,
+                    lender, borrower, caller, inscription_id, debt_assets.len(), actual_percentage, order.duration,
                 );
 
             // Track volume for the lender (for discount tiers)
@@ -1515,18 +1518,24 @@ pub mod StelaProtocol {
             inscription_id: u256,
             debt_count: u32,
             percentage: u256,
+            duration: u64,
         ) -> u256 {
             let treasury = self.treasury.read();
             let genesis_addr = self.genesis_contract.read();
             // Fee model only active when genesis_contract is configured
             let has_fee_model = !genesis_addr.is_zero() && !treasury.is_zero();
 
+            // Use swap fee constants for duration==0, lending fee constants otherwise
+            let is_swap = duration == 0;
+            let base_treasury_bps = if is_swap { SWAP_TREASURY_BASE } else { SETTLE_TREASURY_BASE };
+            let floor_treasury_bps = if is_swap { SWAP_TREASURY_FLOOR } else { SETTLE_TREASURY_FLOOR };
+
             // Calculate discounted treasury BPS for settle
             let treasury_bps = if has_fee_model {
                 let discount_pct = self._calculate_discount(from);
-                let discounted = SETTLE_TREASURY_BASE - (SETTLE_TREASURY_BASE * discount_pct / 100);
-                if discounted < SETTLE_TREASURY_FLOOR {
-                    SETTLE_TREASURY_FLOOR
+                let discounted = base_treasury_bps - (base_treasury_bps * discount_pct / 100);
+                if discounted < floor_treasury_bps {
+                    floor_treasury_bps
                 } else {
                     discounted
                 }

@@ -386,3 +386,79 @@ fn test_volume_tracking_on_settle() {
 
     stop_cheat_block_timestamp_global();
 }
+
+// ============================================================
+//       SWAP FEE: DURATION=0 USES 10 BPS (5 RELAYER + 5 TREASURY)
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+fn test_swap_fee_no_discount() {
+    let setup = deploy_discount_setup();
+
+    // Lender has 0 Genesis NFTs -> no discount
+    // Swap fee (duration=0): 5 relayer + 5 treasury = 10 BPS total
+    // debt_amount = 100_000
+    // relayer = 100_000 * 5 / 10_000 = 50
+    // treasury = 100_000 * 5 / 10_000 = 50
+    // total fee = 100
+    // borrower net = 99_900
+
+    let borrower_net = do_settle_and_get_borrower_net(
+        @setup, 100_000, 50_000, 10_000, 0, 2000, 1000, 0,
+    );
+
+    assert(borrower_net == 99_900, 'swap no discount: net 99900');
+
+    stop_cheat_block_timestamp_global();
+}
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+fn test_swap_fee_with_one_nft() {
+    let setup = deploy_discount_setup();
+
+    // Mint 1 Genesis NFT to lender
+    start_cheat_caller_address(setup.genesis_address, OWNER());
+    setup.genesis.admin_mint(setup.lender_account, 1);
+    stop_cheat_caller_address(setup.genesis_address);
+
+    // 15% discount on SWAP_TREASURY_BASE (5 BPS)
+    // discounted = 5 - (5 * 15 / 100) = 5 - 0 = 5 BPS (integer math: 75/100=0)
+    // Floor is 3 BPS, so treasury = max(5, 3) = 5 BPS
+    // relayer = 5 BPS (never discounted)
+    // total fee = 5 + 5 = 10 BPS
+    // debt 100_000: fee = 100_000 * 10 / 10_000 = 100
+    // borrower net = 100_000 - 100 = 99_900
+
+    let borrower_net = do_settle_and_get_borrower_net(
+        @setup, 100_000, 50_000, 10_000, 0, 2000, 1000, 0,
+    );
+
+    assert(borrower_net == 99_900, 'swap 1nft: net 99900');
+
+    stop_cheat_block_timestamp_global();
+}
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+fn test_swap_fee_vs_lending_fee() {
+    let setup = deploy_discount_setup();
+
+    // First: settle a swap (duration=0) — 10 BPS total
+    let swap_net = do_settle_and_get_borrower_net(
+        @setup, 100_000, 50_000, 10_000, 0, 2000, 1000, 0,
+    );
+
+    // Second: settle a loan (duration=86400) — 20 BPS total
+    let lending_net = do_settle_and_get_borrower_net(
+        @setup, 100_000, 50_000, 10_000, 86400, 2000, 1000, 1,
+    );
+
+    // Swap should have lower fee (higher net)
+    assert(swap_net == 99_900, 'swap net 99900');
+    assert(lending_net == 99_800, 'lending net 99800');
+    assert(swap_net > lending_net, 'swap fee < lending fee');
+
+    stop_cheat_block_timestamp_global();
+}
