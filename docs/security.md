@@ -39,8 +39,8 @@ OpenZeppelin `PausableComponent`. Paused functions (check `assert_not_paused`):
 - `fill_signed_order`
 
 **Not paused** (always accessible):
-- View functions: `get_inscription`, `get_locker`, `convert_to_shares`, `get_inscription_fee`, `get_treasury`, `is_paused`, `nonces`, `get_relayer_fee`, `get_genesis_contract`, `get_volume_settled`
-- Admin functions: `set_inscription_fee`, `set_treasury`, `set_registry`, `set_inscriptions_nft`, `set_relayer_fee`, `set_implementation_hash`, `set_locker_allowed_selector`, `set_genesis_contract`
+- View functions: `get_inscription`, `get_locker`, `convert_to_shares`, `get_treasury`, `is_paused`, `nonces`, `get_genesis_contract`, `get_volume_settled`
+- Admin functions: `set_treasury`, `set_registry`, `set_inscriptions_nft`, `set_implementation_hash`, `set_locker_allowed_selector`, `set_genesis_contract`
 - `cancel_inscription` -- allows creators to cancel unfilled inscriptions during emergencies
 - `cancel_order`, `cancel_orders_by_nonce` -- allow makers to cancel signed orders during emergencies
 
@@ -54,11 +54,9 @@ Only the owner can call `pause()` / `unpause()`.
 
 | Function | Purpose |
 |---|---|
-| `set_inscription_fee(fee)` | Set protocol fee in BPS |
 | `set_treasury(treasury)` | Set fee recipient address |
 | `set_registry(registry)` | Set SNIP-14 TBA registry |
 | `set_inscriptions_nft(nft)` | Set inscription NFT contract |
-| `set_relayer_fee(fee)` | Set relayer fee for off-chain settlement |
 | `set_implementation_hash(hash)` | Set LockerAccount class hash |
 | `set_genesis_contract(genesis)` | Set Genesis NFT contract for fee discounts |
 | `set_locker_allowed_selector(locker, selector, allowed)` | Configure locker allowlist |
@@ -295,8 +293,6 @@ All inputs validated non-zero:
 - `set_registry`: `!registry.is_zero()` (`INVALID_ADDRESS`)
 - `set_inscriptions_nft`: `!inscriptions_nft.is_zero()` (`INVALID_ADDRESS`)
 - `set_implementation_hash`: `implementation_hash != 0` (`ZERO_IMPL_HASH`)
-- `set_inscription_fee`: `fee <= MAX_BPS` (`FEE_TOO_HIGH`)
-- `set_relayer_fee`: `fee <= MAX_BPS` (`FEE_TOO_HIGH`)
 - `set_locker_allowed_selector`: `self.is_locker.read(locker)` (`INVALID_ADDRESS`)
 - `set_genesis_contract`: no validation (zero address disables discounts)
 
@@ -339,7 +335,6 @@ For multi-lender inscriptions not fully filled, repayment and liquidation scale 
 | `NFT_ALREADY_LOCKED` | `'STELA: nft already locked'` | (Reserved) |
 | `ALREADY_SIGNED` | `'STELA: already signed'` | Double-signing single-lender |
 | `INVALID_ADDRESS` | `'STELA: invalid address'` | Zero address, non-locker in set_locker_allowed_selector |
-| `FEE_TOO_HIGH` | `'STELA: fee too high'` | Fee exceeds MAX_BPS |
 | `ZERO_ASSET_VALUE` | `'STELA: zero asset value'` | Fungible asset with value = 0 |
 | `ZERO_IMPL_HASH` | `'STELA: zero impl hash'` | Zero implementation hash |
 | `NFT_NOT_FUNGIBLE` | `'STELA: nft not fungible'` | ERC721/ERC1155 in debt/interest or multi-lender collateral |

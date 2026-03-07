@@ -26,9 +26,8 @@ pub mod Errors {
     pub const ZERO_COLLATERAL: felt252 = 'STELA: zero collateral';
     pub const ZERO_ASSET_VALUE: felt252 = 'STELA: zero asset value';
     pub const NFT_NOT_FUNGIBLE: felt252 = 'STELA: nft not fungible';
-    pub const NFT_ALREADY_LOCKED: felt252 = 'STELA: nft already locked';
-    pub const NFT_MULTI_LENDER: felt252 = 'STELA: nft no multi lender';
     pub const TOO_MANY_ASSETS: felt252 = 'STELA: too many assets';
+    pub const SWAP_NO_MULTI_LENDER: felt252 = 'STELA: swap no multi lender';
 
     // --- Access control and locker ---
     pub const UNAUTHORIZED: felt252 = 'STELA: unauthorized';
@@ -36,9 +35,7 @@ pub mod Errors {
     pub const INVALID_ADDRESS: felt252 = 'STELA: invalid address';
 
     // --- Admin / config ---
-    pub const FEE_TOO_HIGH: felt252 = 'STELA: fee too high';
     pub const ZERO_IMPL_HASH: felt252 = 'STELA: zero impl hash';
-    pub const PAUSED: felt252 = 'STELA: paused';
 
     // --- Off-chain settlement (SNIP-12) ---
     pub const INVALID_SIGNATURE: felt252 = 'STELA: invalid signature';

@@ -43,11 +43,13 @@ Each component draws from proven DeFi protocol patterns, adapted for Cairo and S
 
 | Event | Total Fee (BPS) | Relayer | Treasury |
 |-------|----------------|---------|----------|
-| **SETTLE** | 20 | 5 (never discounted) | 15 |
-| **REDEEM** | 10 | 0 | 10 |
+| **SETTLE (loan)** | 25 | 5 (never discounted) | 20 |
+| **SETTLE (swap)** | 15 | 5 (never discounted) | 10 |
+| **REDEEM** | 0 | 0 | 0 |
 | **LIQUIDATE** | 0 | 0 | 0 |
 
-Fee floors: settle minimum 10 BPS, redeem minimum 5 BPS.
+All fees charged at settle only. No redeem fee. No share dilution.
+Fee floors after NFT discount: settle treasury min 10 BPS, swap treasury min 5 BPS.
 
 ### 2.2 NFT Discount Model
 
@@ -227,7 +229,7 @@ nft_bonus = 2% * (nft_count - 1)              (per extra NFT beyond the first)
 total_discount = min(base_discount + volume_discount + nft_bonus, 50%)
 ```
 
-The discount applies only to the treasury portion of fees. The relayer portion (5 BPS) is never discounted. Fee floors: settle 10 BPS minimum, redeem 5 BPS minimum.
+The discount applies only to the treasury portion of fees. The relayer portion (5 BPS) is never discounted. Fee floors: settle treasury 10 BPS minimum, swap treasury 5 BPS minimum. No redeem fee.
 
 ### 4.3 Storage
 
@@ -264,14 +266,12 @@ volume_settled: Map<ContractAddress, u256>,    // per-address cumulative settled
 Constants at module level:
 
 ```cairo
-// Fee constants (in BPS)
-const SETTLE_FEE_BPS: u256 = 20;       // Total fee on settle (0.20%)
-const SETTLE_RELAYER_BPS: u256 = 5;     // Relayer portion (never discounted)
-const SETTLE_TREASURY_BPS: u256 = 15;   // Treasury portion (discountable)
-const REDEEM_FEE_BPS: u256 = 10;        // Total fee on redeem (all treasury)
-// Fee floors
-const SETTLE_FEE_FLOOR: u256 = 10;      // Minimum settle fee after discount
-const REDEEM_FEE_FLOOR: u256 = 5;       // Minimum redeem fee after discount
+// Fee constants (in BPS) — all fees at settle only, no redeem fee, no share dilution
+const RELAYER_BPS: u256 = 5;               // Relayer portion (never discounted)
+const SETTLE_TREASURY_BASE: u256 = 20;     // Treasury base on settle (lending)
+const SWAP_TREASURY_BASE: u256 = 10;       // Treasury base on swap (duration=0)
+const SETTLE_TREASURY_FLOOR: u256 = 10;    // Min treasury on settle after discount
+const SWAP_TREASURY_FLOOR: u256 = 5;       // Min treasury on swap after discount
 ```
 
 ### 5.3 New Admin Functions
@@ -292,8 +292,8 @@ Treasury receives fees via simple `transfer()`. No FeeVault, no deposit pattern,
 
 | Function | Change Type | Description |
 |----------|------------|-------------|
-| `settle()` | Modified logic | 20 BPS total (5 relayer + 15 treasury), discount for NFT holders |
-| `redeem()` | Modified logic | 10 BPS treasury fee, discount for NFT holders |
+| `settle()` | Modified logic | Loans 25 BPS (5 relayer + 20 treasury), swaps 15 BPS (5 relayer + 10 treasury), discount for NFT holders |
+| `redeem()` | Modified logic | No fee — lenders get 100% of assets |
 | `set_treasury()` | Existing | Sets treasury address (replaces set_fee_vault) |
 | `get_treasury()` | Existing | Gets treasury address (replaces get_fee_vault) |
 | `set_genesis_contract()` | New function | Admin setter for Genesis NFT address |
@@ -366,16 +366,15 @@ src/interfaces/istela.cairo    -- Add set_genesis_contract/get_genesis_contract/
 - settle() without Genesis NFT: verify full 20 BPS fee
 - settle() with volume tiers: verify increasing discounts
 - settle() fee floor: verify minimum 10 BPS
-- redeem() with Genesis NFT: verify discounted fee
-- redeem() fee floor: verify minimum 5 BPS
+- redeem() is fee-free: verify no treasury transfer on redeem
 - Multiple NFTs: verify per-NFT bonus (+2% each)
 - Discount cap: verify 50% maximum
 - Volume tracking: verify volume_settled increments on settle
 
 ### 8.3 Integration Tests
 
-- Full lifecycle with Genesis: create -> settle -> repay -> redeem, verify fees sent to treasury with discount
-- Swap with Genesis fee: settle(duration=0) -> redeem, verify fees
+- Full lifecycle with Genesis: create -> settle -> repay -> redeem, verify fees at settle only
+- Swap with Genesis fee: settle(duration=0) -> redeem, verify fees at settle only
 - Multi-lender with Genesis fee: multiple settles, verify fees proportional
 - Volume accumulation: verify volume_settled across multiple operations
 
@@ -387,7 +386,7 @@ src/interfaces/istela.cairo    -- Add set_genesis_contract/get_genesis_contract/
 
 2. **Discount manipulation:** Discounts are checked at settle/redeem time against on-chain NFT balance and volume. No caching means discounts always reflect current state.
 
-3. **Fee floors:** Minimum fees (settle 10 BPS, redeem 5 BPS) prevent discounts from reducing fees to near-zero.
+3. **Fee floors:** Minimum fees (settle treasury 10 BPS, swap treasury 5 BPS) prevent discounts from reducing fees to near-zero.
 
 4. **Volume tracking:** `volume_settled` is per-address and cumulative. Cannot be reset or manipulated.
 
@@ -399,4 +398,4 @@ src/interfaces/istela.cairo    -- Add set_genesis_contract/get_genesis_contract/
 
 2. **Discount check:** Reading NFT balance and volume_settled adds 2 storage reads per settle/redeem when genesis_contract is configured. Negligible gas impact.
 
-3. **Redeem fee:** Each redeemed asset now requires 1 extra `transfer` to treasury. Simple and gas-efficient compared to the old FeeVault deposit pattern.
+3. **No redeem fee:** Lenders receive 100% of assets at redemption. All protocol revenue is collected at settle time.

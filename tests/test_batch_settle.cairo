@@ -141,11 +141,6 @@ fn deploy_batch_setup() -> BatchSetup {
     stela.set_registry(registry_address);
     stop_cheat_caller_address(stela_address);
 
-    // Set inscription fee to 0 for simplicity
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
-
     // Deploy MockAccounts for borrowers and lender
     let account_class = declare("MockAccount").unwrap().contract_class();
     let (borrower1, _) = account_class.deploy(@array![]).unwrap();

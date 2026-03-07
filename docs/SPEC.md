@@ -65,11 +65,12 @@ Each active inscription (duration > 0) creates a token-bound account (SNIP-14 on
 
 ## Protocol Fee
 
-A small fee (configurable, default 10 BPS = 0.1%) is taken from lender shares and minted to the protocol treasury as ERC-1155 tokens. The treasury can redeem these shares like any other share holder.
+Fees are charged at settlement only (no fee at redeem). All fees are hardcoded constants:
 
-## Relayer Fee
+- **Loans** (duration > 0): 25 BPS total (5 BPS relayer + 20 BPS treasury)
+- **Swaps** (duration = 0): 15 BPS total (5 BPS relayer + 10 BPS treasury)
 
-For off-chain settlements via `settle()`, a relayer fee (configurable, default 0 BPS) is deducted from the lender's debt transfer and sent to the caller (relayer). This compensates the relayer for gas costs.
+The relayer fee (5 BPS) is deducted from the lender's debt transfer and sent to the caller (relayer) to compensate for gas costs. The treasury portion is sent to the treasury address. Genesis NFT holders receive discounts on the treasury portion only (relayer fee is never discounted).
 
 ## Inscription Lifecycle -- Detailed
 
@@ -172,7 +173,9 @@ calculate_fee_shares(shares, fee_bps):
 
 - `MAX_BPS`: 10,000 (represents 100%)
 - `MAX_ASSETS`: 10 (asset array cap per type)
-- Default `inscription_fee`: 10 BPS (0.1%)
+- `RELAYER_BPS`: 5 (0.05%, hardcoded)
+- `SETTLE_TREASURY_BASE`: 20 BPS (loans, hardcoded)
+- `SWAP_TREASURY_BASE`: 10 BPS (swaps, hardcoded)
 - `VIRTUAL_SHARE_OFFSET`: 1e16
 
 ---
@@ -334,8 +337,6 @@ All view functions are read-only and do not modify state.
 
 | Function | Signature | Returns | Description |
 |---|---|---|---|
-| `get_inscription_fee` | `() -> u256` | `u256` | Protocol fee in BPS (default 10 = 0.1%). |
-| `get_relayer_fee` | `() -> u256` | `u256` | Relayer fee in BPS for `settle()`. |
 | `get_treasury` | `() -> ContractAddress` | `ContractAddress` | Treasury address for protocol fee shares. |
 | `is_paused` | `() -> bool` | `bool` | True if the protocol is paused. |
 | `nonces` | `(owner: ContractAddress) -> felt252` | `felt252` | Current sequential nonce for an address (used for SNIP-12 signing). |

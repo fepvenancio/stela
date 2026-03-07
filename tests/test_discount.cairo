@@ -1,5 +1,5 @@
 // Tests for the discount model in stela.cairo.
-// Validates _calculate_discount via observable fee amounts in settle() and redeem().
+// Validates _calculate_discount via observable fee amounts in settle().
 //
 // Discount model:
 //   Base: 15% for holding any Genesis NFT
@@ -7,9 +7,9 @@
 //   Multi-NFT: 2% per additional NFT
 //   Cap: 50%
 //
-// Fee floors:
-//   Settle treasury: min 10 BPS after discount
-//   Redeem treasury: min 5 BPS after discount
+// Fee structure (all at settle, no redeem fee):
+//   Loans: 5 BPS relayer + 20 BPS treasury = 25 BPS (floor: 10 BPS treasury)
+//   Swaps: 5 BPS relayer + 10 BPS treasury = 15 BPS (floor: 5 BPS treasury)
 
 use core::hash::{HashStateExTrait, HashStateTrait};
 use core::num::traits::Zero;
@@ -131,16 +131,6 @@ fn deploy_discount_setup() -> DiscountSetup {
     stela.set_registry(registry_address);
     stop_cheat_caller_address(stela_address);
 
-    // Set relayer fee
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_relayer_fee(10);
-    stop_cheat_caller_address(stela_address);
-
-    // Set inscription fee to 0
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
-
     // Set treasury
     start_cheat_caller_address(stela_address, OWNER());
     stela.set_treasury(TREASURY());
@@ -161,6 +151,11 @@ fn deploy_discount_setup() -> DiscountSetup {
     // Set genesis contract on Stela
     start_cheat_caller_address(stela_address, OWNER());
     stela.set_genesis_contract(genesis_address);
+    stop_cheat_caller_address(stela_address);
+
+    // Whitelist debt token for volume tracking
+    start_cheat_caller_address(stela_address, OWNER());
+    stela.set_volume_token_whitelisted(debt_token_address, true);
     stop_cheat_caller_address(stela_address);
 
     // Deploy MockAccounts
@@ -285,18 +280,18 @@ fn test_discount_zero_nfts() {
     let setup = deploy_discount_setup();
 
     // Lender has 0 Genesis NFTs -> no discount
-    // Settle fee: 5 relayer + 15 treasury = 20 BPS total
+    // Settle fee: 5 relayer + 20 treasury = 25 BPS total
     // debt_amount = 100_000
     // relayer = 100_000 * 5 / 10_000 = 50
-    // treasury = 100_000 * 15 / 10_000 = 150
-    // total fee = 200
-    // borrower net = 99_800
+    // treasury = 100_000 * 20 / 10_000 = 200
+    // total fee = 250
+    // borrower net = 99_750
 
     let borrower_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 86400, 2000, 1000, 0,
     );
 
-    assert(borrower_net == 99_800, 'no discount: net 99800');
+    assert(borrower_net == 99_750, 'no discount: net 99750');
 
     stop_cheat_block_timestamp_global();
 }
@@ -315,19 +310,19 @@ fn test_discount_one_nft_zero_volume() {
     setup.genesis.admin_mint(setup.lender_account, 1);
     stop_cheat_caller_address(setup.genesis_address);
 
-    // 15% discount on SETTLE_TREASURY_BASE (15 BPS)
-    // discounted = 15 - (15 * 15 / 100) = 15 - 2 = 13 BPS (integer math: 225/100=2)
-    // But floor is 10 BPS, so treasury = max(13, 10) = 13 BPS
+    // 15% discount on SETTLE_TREASURY_BASE (20 BPS)
+    // discounted = 20 - (20 * 15 / 100) = 20 - 3 = 17 BPS (integer math: 300/100=3)
+    // Floor is 10 BPS, so treasury = max(17, 10) = 17 BPS
     // relayer = 5 BPS (never discounted)
-    // total fee = 5 + 13 = 18 BPS
-    // debt 100_000: fee = 100_000 * 18 / 10_000 = 180
-    // borrower net = 100_000 - 180 = 99_820
+    // total fee = 5 + 17 = 22 BPS
+    // debt 100_000: fee = 100_000 * 22 / 10_000 = 220
+    // borrower net = 100_000 - 220 = 99_780
 
     let borrower_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 86400, 2000, 1000, 0,
     );
 
-    assert(borrower_net == 99_820, '1 nft: net 99820');
+    assert(borrower_net == 99_780, '1 nft: net 99780');
 
     stop_cheat_block_timestamp_global();
 }
@@ -347,18 +342,18 @@ fn test_discount_five_nfts_zero_volume() {
     stop_cheat_caller_address(setup.genesis_address);
 
     // 23% discount: 15 base + 2 * 4 additional = 23%
-    // discounted = 15 - (15 * 23 / 100) = 15 - 3 = 12 BPS (345/100=3)
-    // Floor 10 BPS, so treasury = max(12, 10) = 12 BPS
+    // discounted = 20 - (20 * 23 / 100) = 20 - 4 = 16 BPS (460/100=4)
+    // Floor 10 BPS, so treasury = max(16, 10) = 16 BPS
     // relayer = 5
-    // total = 17 BPS
-    // fee = 100_000 * 17 / 10_000 = 170
-    // borrower net = 99_830
+    // total = 21 BPS
+    // fee = 100_000 * 21 / 10_000 = 210
+    // borrower net = 99_790
 
     let borrower_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 86400, 2000, 1000, 0,
     );
 
-    assert(borrower_net == 99_830, '5 nft: net 99830');
+    assert(borrower_net == 99_790, '5 nft: net 99790');
 
     stop_cheat_block_timestamp_global();
 }
@@ -397,18 +392,18 @@ fn test_swap_fee_no_discount() {
     let setup = deploy_discount_setup();
 
     // Lender has 0 Genesis NFTs -> no discount
-    // Swap fee (duration=0): 5 relayer + 5 treasury = 10 BPS total
+    // Swap fee (duration=0): 5 relayer + 10 treasury = 15 BPS total
     // debt_amount = 100_000
     // relayer = 100_000 * 5 / 10_000 = 50
-    // treasury = 100_000 * 5 / 10_000 = 50
-    // total fee = 100
-    // borrower net = 99_900
+    // treasury = 100_000 * 10 / 10_000 = 100
+    // total fee = 150
+    // borrower net = 99_850
 
     let borrower_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 0, 2000, 1000, 0,
     );
 
-    assert(borrower_net == 99_900, 'swap no discount: net 99900');
+    assert(borrower_net == 99_850, 'swap no discount: net 99850');
 
     stop_cheat_block_timestamp_global();
 }
@@ -423,19 +418,19 @@ fn test_swap_fee_with_one_nft() {
     setup.genesis.admin_mint(setup.lender_account, 1);
     stop_cheat_caller_address(setup.genesis_address);
 
-    // 15% discount on SWAP_TREASURY_BASE (5 BPS)
-    // discounted = 5 - (5 * 15 / 100) = 5 - 0 = 5 BPS (integer math: 75/100=0)
-    // Floor is 3 BPS, so treasury = max(5, 3) = 5 BPS
+    // 15% discount on SWAP_TREASURY_BASE (10 BPS)
+    // discounted = 10 - (10 * 15 / 100) = 10 - 1 = 9 BPS (integer math: 150/100=1)
+    // Floor is 5 BPS, so treasury = max(9, 5) = 9 BPS
     // relayer = 5 BPS (never discounted)
-    // total fee = 5 + 5 = 10 BPS
-    // debt 100_000: fee = 100_000 * 10 / 10_000 = 100
-    // borrower net = 100_000 - 100 = 99_900
+    // total fee = 5 + 9 = 14 BPS
+    // debt 100_000: fee = 100_000 * 14 / 10_000 = 140
+    // borrower net = 100_000 - 140 = 99_860
 
     let borrower_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 0, 2000, 1000, 0,
     );
 
-    assert(borrower_net == 99_900, 'swap 1nft: net 99900');
+    assert(borrower_net == 99_860, 'swap 1nft: net 99860');
 
     stop_cheat_block_timestamp_global();
 }
@@ -445,19 +440,19 @@ fn test_swap_fee_with_one_nft() {
 fn test_swap_fee_vs_lending_fee() {
     let setup = deploy_discount_setup();
 
-    // First: settle a swap (duration=0) — 10 BPS total
+    // First: settle a swap (duration=0) — 15 BPS total
     let swap_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 0, 2000, 1000, 0,
     );
 
-    // Second: settle a loan (duration=86400) — 20 BPS total
+    // Second: settle a loan (duration=86400) — 25 BPS total
     let lending_net = do_settle_and_get_borrower_net(
         @setup, 100_000, 50_000, 10_000, 86400, 2000, 1000, 1,
     );
 
     // Swap should have lower fee (higher net)
-    assert(swap_net == 99_900, 'swap net 99900');
-    assert(lending_net == 99_800, 'lending net 99800');
+    assert(swap_net == 99_850, 'swap net 99850');
+    assert(lending_net == 99_750, 'lending net 99750');
     assert(swap_net > lending_net, 'swap fee < lending fee');
 
     stop_cheat_block_timestamp_global();

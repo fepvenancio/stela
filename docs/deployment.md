@@ -149,7 +149,6 @@ starkli deploy target/dev/stela_StelaProtocol.contract_class.json \
 The constructor automatically:
 - Initializes ERC-1155 with empty base URI
 - Sets owner via OwnableComponent
-- Sets default protocol fee to 10 BPS (0.1%)
 - Sets treasury to the owner address
 
 ---
@@ -165,22 +164,6 @@ set_treasury(treasury: ContractAddress)
 ```
 
 If treasury should differ from owner. Receives fee shares (ERC-1155) on every signing.
-
-### Set Protocol Fee
-
-```
-set_inscription_fee(fee: u256)
-```
-
-Default is 10 BPS (0.1%). Maximum 10,000 (100%).
-
-### Set Relayer Fee
-
-```
-set_relayer_fee(fee: u256)
-```
-
-For off-chain settlement. Deducted from lender's debt transfer, sent to relayer. Default is 0.
 
 ### Update Implementation Hash
 
@@ -281,12 +264,10 @@ Deployment sequence:
 ### Post-Deployment
 
 - [ ] `set_treasury` if treasury differs from owner
-- [ ] `set_inscription_fee` set to desired value (or leave default 10 BPS)
-- [ ] `set_relayer_fee` set if off-chain settlement is enabled
 - [ ] `set_genesis_contract` set if fee discount system is enabled
 - [ ] NFT contract grants minting permissions to StelaProtocol address
 - [ ] `is_paused()` returns false
-- [ ] Verify: `get_inscription_fee()`, `get_treasury()`, `get_relayer_fee()`, `get_genesis_contract()`
+- [ ] Verify: `get_treasury()`, `get_genesis_contract()`
 - [ ] Test full lifecycle on testnet: create, sign, repay, redeem
 
 ### Sepolia Testing
@@ -306,7 +287,7 @@ Deployment sequence:
 
 - **StelaProtocol** is not upgradeable. New deployment required for logic changes.
 - **LockerAccount** instances deployed via registry. Changing `implementation_hash` only affects new lockers.
-- **Configuration** (fees, treasury, registry, NFT, implementation hash, genesis contract) can be updated by owner without redeployment.
+- **Configuration** (treasury, registry, NFT, implementation hash, genesis contract) can be updated by owner without redeployment. Fee rates are hardcoded constants.
 
 ---
 
@@ -369,6 +350,4 @@ sncast --account starkMfer invoke \
 # 3. Verify everything
 sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_treasury
 sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_genesis_contract
-sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_inscription_fee
-sncast --account starkMfer call --contract-address <NEW_STELA_ADDRESS> --function get_relayer_fee
 ```

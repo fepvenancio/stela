@@ -148,28 +148,6 @@ fn test_multi_lender_exceeds_max_bps_fails() {
 //       FEE VALIDATION
 // ============================================================
 
-#[test]
-#[feature("deprecated-starknet-consts")]
-#[should_panic(expected: 'STELA: fee too high')]
-fn test_fee_exceeds_max_bps_fails() {
-    let (stela_address, stela) = deploy_stela();
-
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(MAX_BPS + 1); // 10001 BPS — must panic
-}
-
-#[test]
-#[feature("deprecated-starknet-consts")]
-fn test_fee_at_max_bps_succeeds() {
-    let (stela_address, stela) = deploy_stela();
-
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(MAX_BPS); // 10000 BPS — edge case, should succeed
-    stop_cheat_caller_address(stela_address);
-
-    assert(stela.get_inscription_fee() == MAX_BPS, 'fee set to max');
-}
-
 // ============================================================
 //       ZERO-ADDRESS VALIDATION IN ADMIN SETTERS
 // ============================================================
@@ -476,10 +454,6 @@ fn test_lender_creation_full_lifecycle() {
     let collateral_amount: u256 = 500;
     let interest_amount: u256 = 100;
 
-    // Set fee to 0 for exact amount verification
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
 
     // Lender needs debt tokens (they provide them on sign)
     setup_lender_with_debt(@setup, LENDER(), debt_amount);
@@ -565,10 +539,6 @@ fn test_otc_swap_full_lifecycle() {
     let debt_amount: u256 = 1000;
     let collateral_amount: u256 = 500;
 
-    // Set fee to 0 for exact amounts
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
 
     setup_borrower_with_collateral(@setup, BORROWER(), collateral_amount);
     setup_lender_with_debt(@setup, LENDER(), debt_amount);
@@ -625,18 +595,15 @@ fn test_otc_swap_full_lifecycle() {
 }
 
 // ============================================================
-//       TREASURY FEE SHARES VERIFICATION
+//       NO SHARE DILUTION (inscription_fee removed)
 // ============================================================
 
 #[test]
 #[feature("deprecated-starknet-consts")]
-fn test_treasury_receives_fee_shares() {
+fn test_no_share_dilution() {
     let setup = deploy_full_setup();
     let stela = setup.stela;
     let stela_address = setup.stela_address;
-
-    // Default fee is 10 BPS (0.1%)
-    assert(stela.get_inscription_fee() == 10, 'default fee is 10 BPS');
 
     setup_borrower_with_collateral(@setup, BORROWER(), 500);
     setup_lender_with_debt(@setup, LENDER(), 1000);
@@ -656,7 +623,7 @@ fn test_treasury_receives_fee_shares() {
     let inscription_id = stela.create_inscription(params);
     stop_cheat_caller_address(stela_address);
 
-    // Sign — lender + treasury get shares
+    // Sign — only lender gets shares, no dilution
     start_cheat_caller_address(stela_address, LENDER());
     stela.sign_inscription(inscription_id, MAX_BPS);
     stop_cheat_caller_address(stela_address);
@@ -665,17 +632,9 @@ fn test_treasury_receives_fee_shares() {
     // Treasury defaults to OWNER() in the constructor
     let treasury_shares = get_shares(stela_address, OWNER(), inscription_id);
 
-    // Treasury must have received fee shares
-    assert(treasury_shares > 0, 'treasury got fee shares');
+    // Treasury must NOT have received any fee shares (share dilution removed)
+    assert(treasury_shares == 0, 'treasury has no shares');
     assert(lender_shares > 0, 'lender got shares');
-
-    // Fee shares should be 0.1% of lender shares (10 BPS)
-    // fee_shares = lender_shares * 10 / 10000 = lender_shares / 1000
-    let expected_fee = lender_shares / 1000;
-    assert(treasury_shares == expected_fee, 'fee is exactly 0.1% of lender');
-
-    // Lender shares should be much larger than treasury shares
-    assert(lender_shares > treasury_shares * 100, 'lender >> treasury');
 
     stop_cheat_block_timestamp_global();
 }
@@ -695,10 +654,6 @@ fn test_partial_redeem() {
     let collateral_amount: u256 = 5000;
     let interest_amount: u256 = 1000;
 
-    // Fee=0 for exact verification
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
 
     setup_borrower_with_collateral(@setup, BORROWER(), collateral_amount);
     setup_lender_with_debt(@setup, LENDER(), debt_amount);
@@ -779,10 +734,6 @@ fn test_partial_fill_liquidation() {
     let collateral_amount: u256 = 5000;
     let interest_amount: u256 = 1000;
 
-    // Fee=0 for exact amounts
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
 
     setup_borrower_with_collateral(@setup, BORROWER(), collateral_amount);
     setup_lender_with_debt(@setup, LENDER(), debt_amount);
@@ -855,10 +806,6 @@ fn test_exact_token_amounts_lifecycle() {
     let collateral_amount: u256 = 5000;
     let interest_amount: u256 = 2000;
 
-    // Fee=0 for exact verification
-    start_cheat_caller_address(stela_address, OWNER());
-    stela.set_inscription_fee(0);
-    stop_cheat_caller_address(stela_address);
 
     setup_borrower_with_collateral(@setup, BORROWER(), collateral_amount);
     setup_lender_with_debt(@setup, LENDER(), debt_amount);

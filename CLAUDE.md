@@ -776,21 +776,22 @@ ERC721 mint contract. 300 max supply, sequential IDs 1-300. Constructor mints 50
 
 Fees are transferred directly to a treasury address via simple `transfer()`. There is no FeeVault contract. Genesis NFT holders receive fee **discounts** rather than fee revenue.
 
-### Fee Split Constants in `src/stela.cairo`
+### Fee Constants in `src/stela.cairo`
+
+All fees charged at settle only. No redeem fee. No share dilution (`inscription_fee` removed).
 
 ```
-SETTLE_FEE_BPS    = 20  (total fee on settle: 0.20%)
-SETTLE_RELAYER_BPS = 5  (relayer/bot compensation, never discounted)
-SETTLE_TREASURY_BPS = 15 (treasury portion)
-
-REDEEM_FEE_BPS    = 10  (total fee on redeem: 0.1%, all treasury)
+Loans (duration > 0): RELAYER_BPS=5 + SETTLE_TREASURY_BASE=20 = 25 BPS (0.25%)
+Swaps (duration = 0): RELAYER_BPS=5 + SWAP_TREASURY_BASE=10  = 15 BPS (0.15%)
+Redeem: 0 BPS
+Liquidate: 0 BPS
 ```
 
-Fee floors: settle 10 BPS minimum, redeem 5 BPS minimum.
+Fee floors after NFT discount: settle treasury min 10 BPS, swap treasury min 5 BPS.
 
 ### NFT Discount Model
 
-Genesis NFT holders get fee discounts on settle/redeem:
+Genesis NFT holders get fee discounts on settle (treasury portion only):
 - **Base discount**: 15% (holding 1+ NFT)
 - **Volume tiers**: +5% per tier (7 tiers from $10K to $1M settled volume)
 - **Per-extra-NFT bonus**: +2% per additional NFT held

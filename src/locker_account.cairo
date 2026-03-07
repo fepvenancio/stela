@@ -29,8 +29,8 @@ pub mod LockerAccount {
         stela_contract: ContractAddress,
         // Whether the locker is unlocked (restrictions removed)
         unlocked: bool,
-        // Allowlist: selector -> bool. Only these selectors can be called while locked.
-        allowed_selectors: Map<felt252, bool>,
+        // Allowlist: (target, selector) -> bool. Only these pairs can be called while locked.
+        allowed_selectors: Map<(ContractAddress, felt252), bool>,
     }
 
     // ============================================================
@@ -62,6 +62,7 @@ pub mod LockerAccount {
     pub struct AllowedSelectorUpdated {
         #[key]
         pub locker: ContractAddress,
+        pub target: ContractAddress,
         pub selector: felt252,
         pub allowed: bool,
     }
@@ -93,13 +94,16 @@ pub mod LockerAccount {
                 return starknet::VALIDATED;
             }
 
-            // When locked, only allow calls whose selectors are in the allowlist.
-            // This lets the borrower vote, delegate, or showcase NFTs while
-            // preventing any asset transfers out of the locker.
+            // When locked, only allow calls whose (target, selector) pairs are in the allowlist.
+            // This lets the borrower vote/delegate on specific contracts while
+            // preventing asset transfers out of the locker.
             let mut i: u32 = 0;
             while i < calls.len() {
                 let call = *calls.at(i);
-                assert(self.allowed_selectors.read(call.selector), Errors::FORBIDDEN_SELECTOR);
+                assert(
+                    self.allowed_selectors.read((call.to, call.selector)),
+                    Errors::FORBIDDEN_SELECTOR,
+                );
                 i += 1;
             };
             starknet::VALIDATED
@@ -114,7 +118,10 @@ pub mod LockerAccount {
                 let mut i: u32 = 0;
                 while i < calls.len() {
                     let call = *calls.at(i);
-                    assert(self.allowed_selectors.read(call.selector), Errors::FORBIDDEN_SELECTOR);
+                    assert(
+                        self.allowed_selectors.read((call.to, call.selector)),
+                        Errors::FORBIDDEN_SELECTOR,
+                    );
                     i += 1;
                 };
             }
@@ -171,15 +178,17 @@ pub mod LockerAccount {
             self.emit(LockerUnlocked { locker: get_contract_address() });
         }
 
-        /// Add or remove a selector from the allowlist.
+        /// Add or remove a (target, selector) pair from the allowlist.
         /// Only callable by the Stela contract.
-        fn set_allowed_selector(ref self: ContractState, selector: felt252, allowed: bool) {
+        fn set_allowed_selector(
+            ref self: ContractState, target: ContractAddress, selector: felt252, allowed: bool,
+        ) {
             let caller = get_caller_address();
             let stela = self.stela_contract.read();
             assert(caller == stela, Errors::UNAUTHORIZED);
 
-            self.allowed_selectors.write(selector, allowed);
-            self.emit(AllowedSelectorUpdated { locker: get_contract_address(), selector, allowed });
+            self.allowed_selectors.write((target, selector), allowed);
+            self.emit(AllowedSelectorUpdated { locker: get_contract_address(), target, selector, allowed });
         }
 
         /// Check if the locker is currently unlocked.
@@ -187,9 +196,11 @@ pub mod LockerAccount {
             self.unlocked.read()
         }
 
-        /// Check if a selector is in the allowlist.
-        fn is_selector_allowed(self: @ContractState, selector: felt252) -> bool {
-            self.allowed_selectors.read(selector)
+        /// Check if a (target, selector) pair is in the allowlist.
+        fn is_selector_allowed(
+            self: @ContractState, target: ContractAddress, selector: felt252,
+        ) -> bool {
+            self.allowed_selectors.read((target, selector))
         }
     }
 

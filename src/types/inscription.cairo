@@ -32,7 +32,7 @@ pub struct InscriptionParams {
 pub struct StoredInscription {
     /// The borrower's address. Zero if the inscription was created by a lender and not yet filled.
     pub borrower: ContractAddress,
-    /// The lender's address (last lender for multi-lender). Zero if created by borrower and not yet filled.
+    /// The lender's address (first lender for multi-lender). Zero if created by borrower and not yet filled.
     pub lender: ContractAddress,
     /// Loan duration in seconds. 0 = instant swap.
     pub duration: u64,

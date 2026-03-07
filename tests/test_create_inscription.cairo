@@ -184,10 +184,6 @@ fn test_create_inscription_expired_deadline() {
 fn test_view_functions() {
     let (_contract_address, stela) = deploy_stela();
 
-    // Test get_inscription_fee
-    let fee = stela.get_inscription_fee();
-    assert(fee == 10, 'default fee should be 10 BPS');
-
     // Test convert_to_shares for non-existent inscription (should not panic)
     let shares = stela.convert_to_shares(0, 5000);
     // With no existing supply, shares should be proportional to VIRTUAL_SHARE_OFFSET

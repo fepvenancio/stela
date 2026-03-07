@@ -208,11 +208,13 @@ Step 6: On-chain settle() execution
    +-- 17. Emit: InscriptionCreated, InscriptionSigned, OrderSettled
 ```
 
-**Relayer fee calculation per debt asset:**
+**Fee calculation per debt asset (at settle):**
 ```
 total_amount = scale_by_percentage(asset.value, actual_percentage)
-fee_amount = total_amount * relayer_fee_bps / MAX_BPS   // rounds down
-net_amount = total_amount - fee_amount
+relayer_amount = total_amount * RELAYER_BPS / MAX_BPS              // 5 BPS, rounds down
+treasury_base = SETTLE_TREASURY_BASE (20) or SWAP_TREASURY_BASE (10)
+treasury_amount = total_amount * discounted_treasury_bps / MAX_BPS // after NFT discount
+net_amount = total_amount - relayer_amount - treasury_amount
 ```
 
 ---

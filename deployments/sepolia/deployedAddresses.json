@@ -3,22 +3,21 @@
   "deployer": "0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310",
   "contracts": {
     "StelaProtocol": {
-      "address": "0x012998e49cc8205d0bb56b5c10202bd32994091b1cacdb7bcbd03dc6781d4974",
-      "classHash": "0x69f0c72e9ce8596bbaa44cad848d715f41ab6f41bcc380e5145ecb2916e0740",
-      "settleFee": "0.20% (0.05% relayer + 0.15% treasury)",
-      "redeemFee": "0.10% (all treasury)",
-      "note": "batch_settle support, treasury reserve (50 NFTs), per-wallet cap (5)",
-      "previousAddress": "0x0400ed08d0507b1f229c3283ecfc8567fb7240a7d0d99d5af9167993c51d062e"
+      "address": "0x038a0b195e011fbfd75e9bce9bbc4137ebc5296882e11c5769c333b90bda4f89",
+      "classHash": "0x5fbfa9d8fd37ae781711e3baf1d07147a593b8db2c20644487e1482ae75d998",
+      "settleFee": "loans 0.25% (0.05% relayer + 0.20% treasury), swaps 0.15% (0.05% relayer + 0.10% treasury)",
+      "redeemFee": "0% (removed)",
+      "note": "fee-overhaul: no inscription_fee, no redeem fee, no share dilution",
+      "previousAddress": "0x012998e49cc8205d0bb56b5c10202bd32994091b1cacdb7bcbd03dc6781d4974"
     },
     "StelaGenesis": {
-      "address": "0x02405de15c17aaf863bcf23c22706d73d142c8a81df29de9ef129666655847ca",
+      "address": "0x0265ea52ffbf1b7e1a029b94fe1a2023899dd0bc02eb1f11c9b04ea90e957d28",
       "classHash": "0x7a475db3ebd385b5d6a569c85a4a914e67c28f502e43192e05a12d3abe2ae0b",
       "supply": 300,
       "treasuryReserve": 50,
       "maxPerWallet": 5,
       "mintPrice": "1000 STRK",
-      "paymentToken": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
-      "previousAddress": "0x0149d10ef36eabcd0f526133627c11a0d90602159695a447c4e87168bcb95f64"
+      "paymentToken": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
     },
     "LockerAccount": {
       "classHash": "0x012502d64c77788b2db180beeda2188579025ddf688989d2ede5a9ca9fe9a828",

@@ -35,22 +35,19 @@ pub mod StelaProtocol {
 
     // Local imports
     use crate::types::asset::{Asset, AssetType};
-    use crate::utils::share_math::{MAX_BPS, calculate_fee_shares, convert_to_shares, scale_by_percentage};
+    use crate::utils::share_math::{MAX_BPS, convert_to_shares, scale_by_percentage};
 
     /// Maximum number of assets per type (debt, interest, collateral) in a single inscription.
     const MAX_ASSETS: u32 = 10;
 
-    // Fee constants (in BPS)
-    const SETTLE_FEE_BPS: u256 = 20;          // Total fee on settle/lending (5 relayer + 15 treasury)
-    const SWAP_FEE_BPS: u256 = 10;             // Total fee on swap/duration=0 (5 relayer + 5 treasury)
-    const REDEEM_FEE_BPS: u256 = 10;           // Total fee on redeem (10 treasury)
+    // Fee constants (in BPS) — all fees charged at settle only, no redeem fee
+    // Loans: 5 relayer + 20 treasury = 25 BPS total
+    // Swaps: 5 relayer + 10 treasury = 15 BPS total
     const RELAYER_BPS: u256 = 5;               // Relayer portion (never discounted)
-    const SETTLE_TREASURY_BASE: u256 = 15;     // Treasury base on settle (lending)
-    const SWAP_TREASURY_BASE: u256 = 5;        // Treasury base on swap (duration=0)
-    const REDEEM_TREASURY_BASE: u256 = 10;     // Treasury base on redeem
+    const SETTLE_TREASURY_BASE: u256 = 20;     // Treasury base on settle (lending)
+    const SWAP_TREASURY_BASE: u256 = 10;       // Treasury base on swap (duration=0)
     const SETTLE_TREASURY_FLOOR: u256 = 10;    // Minimum treasury on settle after discount
-    const SWAP_TREASURY_FLOOR: u256 = 3;       // Minimum treasury on swap after discount
-    const REDEEM_TREASURY_FLOOR: u256 = 5;     // Minimum treasury on redeem after discount
+    const SWAP_TREASURY_FLOOR: u256 = 5;       // Minimum treasury on swap after discount
 
     // Discount constants
     const BASE_NFT_DISCOUNT_PCT: u256 = 15;    // 15% discount for holding any Genesis NFT
@@ -132,14 +129,11 @@ pub mod StelaProtocol {
         // Share tracking
         total_supply: Map<u256, u256>,
         // Protocol config
-        inscription_fee: u256,
         treasury: ContractAddress,
         // External contracts
         inscriptions_nft: ContractAddress,
         registry: ContractAddress,
         implementation_hash: felt252,
-        // Relayer fee (in BPS, separate from inscription_fee)
-        relayer_fee: u256,
         // Signed order storage (matching engine)
         signed_orders: Map<felt252, bool>,
         cancelled_orders: Map<felt252, bool>,
@@ -149,6 +143,8 @@ pub mod StelaProtocol {
         genesis_contract: ContractAddress,
         // Per-address cumulative settled volume (for discount tiers)
         volume_settled: Map<ContractAddress, u256>,
+        // Token whitelist for volume tracking (prevents gaming with worthless tokens)
+        volume_token_whitelisted: Map<ContractAddress, bool>,
         // Emergency pauser (survives ownership renouncement)
         pauser: ContractAddress,
     }
@@ -310,8 +306,6 @@ pub mod StelaProtocol {
         self.erc1155.initializer("");
         // Initialize Ownable
         self.ownable.initializer(owner);
-        // Set protocol config
-        self.inscription_fee.write(10); // Default 10 BPS (0.1%)
         // Treasury defaults to owner/deployer — can be changed via set_treasury
         self.treasury.write(owner);
         self.inscriptions_nft.write(inscriptions_nft);
@@ -359,6 +353,9 @@ pub mod StelaProtocol {
             // This same validation exists in settle() for off-chain order path.
             if params.multi_lender {
                 self._validate_no_nfts(params.collateral_assets.span());
+                // Multi-lender swaps are not supported: the first fill sets liquidated=true
+                // which blocks subsequent fills. Block at creation to prevent stuck inscriptions.
+                assert(params.duration > 0, Errors::SWAP_NO_MULTI_LENDER);
             }
 
             // Determine borrower and lender based on who creates
@@ -602,9 +599,13 @@ pub mod StelaProtocol {
             self.total_supply.write(inscription_id, total_supply - shares);
 
             // Transfer assets using tracked per-inscription balances (pro-rata by shares)
+            // No redeem fee — all fees are charged at settle only
             if inscription.is_repaid {
                 // Repaid: lenders get debt + interest
-                self._redeem_debt_assets(caller, inscription_id, inscription.debt_asset_count, shares, total_supply);
+                self
+                    ._redeem_debt_assets(
+                        caller, inscription_id, inscription.debt_asset_count, shares, total_supply,
+                    );
                 self
                     ._redeem_interest_assets(
                         caller, inscription_id, inscription.interest_asset_count, shares, total_supply,
@@ -640,11 +641,6 @@ pub mod StelaProtocol {
             let inscription = self.inscriptions.read(inscription_id);
             let total_supply = self.total_supply.read(inscription_id);
             convert_to_shares(issued_debt_percentage, total_supply, inscription.issued_debt_percentage)
-        }
-
-        /// Get the protocol fee in BPS applied to lender shares on each sign/settle.
-        fn get_inscription_fee(self: @ContractState) -> u256 {
-            self.inscription_fee.read()
         }
 
         /// Get the treasury address that receives protocol fee shares.
@@ -688,13 +684,6 @@ pub mod StelaProtocol {
         }
 
         // --- Admin functions (all require owner) ---
-
-        /// Set the protocol fee in BPS (e.g. 10 = 0.1%). Must not exceed MAX_BPS.
-        fn set_inscription_fee(ref self: ContractState, fee: u256) {
-            self.ownable.assert_only_owner();
-            assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
-            self.inscription_fee.write(fee);
-        }
 
         /// Set the treasury address that receives protocol fee shares. Must be non-zero.
         fn set_treasury(ref self: ContractState, treasury: ContractAddress) {
@@ -970,18 +959,6 @@ pub mod StelaProtocol {
             self.nonces.Nonces_nonces.read(owner)
         }
 
-        /// Get the relayer fee in BPS.
-        fn get_relayer_fee(self: @ContractState) -> u256 {
-            self.relayer_fee.read()
-        }
-
-        /// Set the relayer fee in BPS. Only owner.
-        fn set_relayer_fee(ref self: ContractState, fee: u256) {
-            self.ownable.assert_only_owner();
-            assert(fee <= MAX_BPS, Errors::FEE_TOO_HIGH);
-            self.relayer_fee.write(fee);
-        }
-
         /// Set the locker implementation class hash. Only owner.
         fn set_implementation_hash(ref self: ContractState, implementation_hash: felt252) {
             self.ownable.assert_only_owner();
@@ -989,9 +966,24 @@ pub mod StelaProtocol {
             self.implementation_hash.write(implementation_hash);
         }
 
-        /// Set the Genesis NFT contract address for fee discount checks. Only owner.
+        /// Whitelist or de-whitelist a token for volume tracking. Only owner.
+        fn set_volume_token_whitelisted(
+            ref self: ContractState, token: ContractAddress, whitelisted: bool,
+        ) {
+            self.ownable.assert_only_owner();
+            assert(!token.is_zero(), Errors::INVALID_ADDRESS);
+            self.volume_token_whitelisted.write(token, whitelisted);
+        }
+
+        /// Check if a token is whitelisted for volume tracking.
+        fn is_volume_token_whitelisted(self: @ContractState, token: ContractAddress) -> bool {
+            self.volume_token_whitelisted.read(token)
+        }
+
+        /// Set the Genesis NFT contract address for fee discount checks. Only owner. Must be non-zero.
         fn set_genesis_contract(ref self: ContractState, genesis_contract: ContractAddress) {
             self.ownable.assert_only_owner();
+            assert(!genesis_contract.is_zero(), Errors::INVALID_ADDRESS);
             self.genesis_contract.write(genesis_contract);
         }
 
@@ -1012,14 +1004,25 @@ pub mod StelaProtocol {
             self.pauser.read()
         }
 
-        /// Add or remove an allowed selector on a specific locker TBA.
+        /// Set a new emergency pauser address. Only owner.
+        fn set_pauser(ref self: ContractState, new_pauser: ContractAddress) {
+            self.ownable.assert_only_owner();
+            assert(!new_pauser.is_zero(), Errors::INVALID_ADDRESS);
+            self.pauser.write(new_pauser);
+        }
+
+        /// Add or remove an allowed (target, selector) pair on a specific locker TBA.
         fn set_locker_allowed_selector(
-            ref self: ContractState, locker: ContractAddress, selector: felt252, allowed: bool,
+            ref self: ContractState,
+            locker: ContractAddress,
+            target: ContractAddress,
+            selector: felt252,
+            allowed: bool,
         ) {
             self.ownable.assert_only_owner();
             assert(self.is_locker.read(locker), Errors::INVALID_ADDRESS);
             let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
-            locker_dispatcher.set_allowed_selector(selector, allowed);
+            locker_dispatcher.set_allowed_selector(target, selector, allowed);
         }
     }
 
@@ -1077,6 +1080,8 @@ pub mod StelaProtocol {
             // H2: ERC721 collateral cannot be used with multi-lender inscriptions
             if order.multi_lender {
                 self._validate_no_nfts(collateral_assets);
+                // Multi-lender swaps are not supported (liquidated=true on first fill blocks subsequent fills)
+                assert(order.duration > 0, Errors::SWAP_NO_MULTI_LENDER);
             }
 
             // Verify borrower signature via ISRC6
@@ -1162,26 +1167,10 @@ pub mod StelaProtocol {
                     );
             }
 
-            // Calculate shares
+            // Calculate and mint shares to lender
             let shares = convert_to_shares(actual_percentage, 0, 0);
-
-            // Calculate and mint fee shares
-            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
-            let total_new_shares = shares + fee_shares;
-
-            // Standard settlement: mint ERC1155 shares to lender
             self.erc1155.update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
-
-            // Mint fee shares to treasury
-            if fee_shares > 0 {
-                let treasury = self.treasury.read();
-                self
-                    .erc1155
-                    .update(Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span());
-            }
-
-            // Update total supply
-            self.total_supply.write(inscription_id, total_new_shares);
+            self.total_supply.write(inscription_id, shares);
 
             // Issue debt with fee (uses discount model)
             let total_relayer_fee = self
@@ -1297,27 +1286,11 @@ pub mod StelaProtocol {
                 actual_percentage, current_supply, inscription.issued_debt_percentage,
             );
 
-            // Calculate and mint fee shares
-            let fee_shares = calculate_fee_shares(shares, self.inscription_fee.read());
-            let total_new_shares = shares + fee_shares;
-
             // Mint lender shares
             self
                 .erc1155
                 .update(Zero::zero(), lender, array![inscription_id].span(), array![shares].span());
-
-            // Mint fee shares to treasury
-            if fee_shares > 0 {
-                let treasury = self.treasury.read();
-                self
-                    .erc1155
-                    .update(
-                        Zero::zero(), treasury, array![inscription_id].span(), array![fee_shares].span(),
-                    );
-            }
-
-            // Update total supply
-            self.total_supply.write(inscription_id, current_supply + total_new_shares);
+            self.total_supply.write(inscription_id, current_supply + shares);
 
             if is_swap {
                 // Instant swap: transfer collateral directly to contract (no locker)
@@ -1350,10 +1323,11 @@ pub mod StelaProtocol {
             inscription.issued_debt_percentage = inscription.issued_debt_percentage + actual_percentage;
             self.inscriptions.write(inscription_id, inscription);
 
-            // Issue debt from lender to borrower (proportional)
+            // Issue debt from lender to borrower (proportional, treasury fee only — no relayer on-chain)
+            let zero_relayer: ContractAddress = Zero::zero();
             self
-                ._issue_debt(
-                    lender, borrower, inscription_id, inscription.debt_asset_count, actual_percentage,
+                ._issue_debt_with_fee(
+                    lender, borrower, zero_relayer, inscription_id, inscription.debt_asset_count, actual_percentage, inscription.duration,
                 );
 
             // Emit event
@@ -1561,23 +1535,6 @@ pub mod StelaProtocol {
             };
         }
 
-        /// Issue debt from lender to borrower.
-        fn _issue_debt(
-            ref self: ContractState,
-            from: ContractAddress,
-            to: ContractAddress,
-            inscription_id: u256,
-            debt_count: u32,
-            percentage: u256,
-        ) {
-            let mut i: u32 = 0;
-            while i < debt_count {
-                let asset = self.inscription_debt_assets.read((inscription_id, i));
-                self._process_payment(asset, from, to, percentage);
-                i += 1;
-            };
-        }
-
         /// Calculate the discount percentage for a user based on Genesis NFT holdings and volume.
         /// Returns the discount percentage (0-50).
         fn _calculate_discount(self: @ContractState, user: ContractAddress) -> u256 {
@@ -1675,8 +1632,13 @@ pub mod StelaProtocol {
 
                 let erc20 = IERC20Dispatcher { contract_address: asset.asset };
 
-                // Relayer fee (never discounted)
-                let relayer_amount = (total_amount * RELAYER_BPS) / MAX_BPS;
+                // Relayer fee (never discounted, skipped when relayer is zero i.e. on-chain path)
+                let has_relayer = !relayer.is_zero();
+                let relayer_amount = if has_relayer {
+                    (total_amount * RELAYER_BPS) / MAX_BPS
+                } else {
+                    0
+                };
                 // Treasury fee (discounted)
                 let treasury_amount = if has_fee_model {
                     (total_amount * treasury_bps) / MAX_BPS
@@ -1709,6 +1671,7 @@ pub mod StelaProtocol {
 
         /// Track cumulative settled volume for an address.
         /// Only called from settle() to prevent gaming.
+        /// Only counts whitelisted tokens to prevent volume inflation with worthless tokens.
         fn _track_volume(
             ref self: ContractState,
             user: ContractAddress,
@@ -1720,8 +1683,11 @@ pub mod StelaProtocol {
             let mut i: u32 = 0;
             while i < debt_count {
                 let asset = self.inscription_debt_assets.read((inscription_id, i));
-                let amount = scale_by_percentage(asset.value, percentage);
-                total_value = total_value + amount;
+                // Only count whitelisted tokens toward volume tiers
+                if self.volume_token_whitelisted.read(asset.asset) {
+                    let amount = scale_by_percentage(asset.value, percentage);
+                    total_value = total_value + amount;
+                }
                 i += 1;
             };
 
@@ -1809,49 +1775,6 @@ pub mod StelaProtocol {
             locker_dispatcher.pull_assets(assets);
         }
 
-        /// Apply redeem fee to an ERC20/ERC4626 amount.
-        /// Uses discount model: treasury gets REDEEM_TREASURY_BASE BPS minus discount, with floor.
-        /// Returns net amount after fee.
-        fn _apply_redeem_fee(
-            ref self: ContractState,
-            asset_address: ContractAddress,
-            gross_amount: u256,
-            redeemer: ContractAddress,
-        ) -> u256 {
-            // Redeem fee only applies when genesis_contract is configured (fee model active)
-            let genesis_addr = self.genesis_contract.read();
-            if genesis_addr.is_zero() || gross_amount == 0 {
-                return gross_amount;
-            }
-
-            let treasury = self.treasury.read();
-            if treasury.is_zero() {
-                return gross_amount;
-            }
-
-            // Calculate discounted redeem treasury BPS
-            let discount_pct = self._calculate_discount(redeemer);
-            let treasury_bps = {
-                let discounted = REDEEM_TREASURY_BASE - (REDEEM_TREASURY_BASE * discount_pct / 100);
-                if discounted < REDEEM_TREASURY_FLOOR {
-                    REDEEM_TREASURY_FLOOR
-                } else {
-                    discounted
-                }
-            };
-
-            let fee_amount = (gross_amount * treasury_bps) / MAX_BPS;
-            let net_amount = gross_amount - fee_amount;
-
-            // Transfer fee directly to treasury
-            if fee_amount > 0 {
-                let erc20 = IERC20Dispatcher { contract_address: asset_address };
-                erc20.transfer(treasury, fee_amount);
-            }
-
-            net_amount
-        }
-
         /// Redeem debt assets using tracked per-inscription balances.
         fn _redeem_debt_assets(
             ref self: ContractState,
@@ -1861,22 +1784,22 @@ pub mod StelaProtocol {
             shares: u256,
             total_supply: u256,
         ) {
+            let is_last_redeemer = shares == total_supply;
             let mut i: u32 = 0;
             while i < debt_count {
                 let asset = self.inscription_debt_assets.read((inscription_id, i));
                 let tracked_balance = self.inscription_debt_balance.read((inscription_id, i));
-                let amount = tracked_balance * shares / total_supply;
+                // Last redeemer gets full remainder to prevent dust from being permanently trapped
+                let amount = if is_last_redeemer {
+                    tracked_balance
+                } else {
+                    tracked_balance * shares / total_supply
+                };
 
                 if amount > 0 {
                     self.inscription_debt_balance.write((inscription_id, i), tracked_balance - amount);
-
-                    // Apply redeem fee (discounted based on redeemer's NFT holdings)
-                    let net_amount = self._apply_redeem_fee(asset.asset, amount, to);
-
-                    if net_amount > 0 {
-                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                        erc20.transfer(to, net_amount);
-                    }
+                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                    erc20.transfer(to, amount);
                 }
 
                 i += 1;
@@ -1892,22 +1815,21 @@ pub mod StelaProtocol {
             shares: u256,
             total_supply: u256,
         ) {
+            let is_last_redeemer = shares == total_supply;
             let mut i: u32 = 0;
             while i < interest_count {
                 let asset = self.inscription_interest_assets.read((inscription_id, i));
                 let tracked_balance = self.inscription_interest_balance.read((inscription_id, i));
-                let amount = tracked_balance * shares / total_supply;
+                let amount = if is_last_redeemer {
+                    tracked_balance
+                } else {
+                    tracked_balance * shares / total_supply
+                };
 
                 if amount > 0 {
                     self.inscription_interest_balance.write((inscription_id, i), tracked_balance - amount);
-
-                    // Apply redeem fee
-                    let net_amount = self._apply_redeem_fee(asset.asset, amount, to);
-
-                    if net_amount > 0 {
-                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                        erc20.transfer(to, net_amount);
-                    }
+                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                    erc20.transfer(to, amount);
                 }
 
                 i += 1;
@@ -1924,6 +1846,7 @@ pub mod StelaProtocol {
             total_supply: u256,
         ) {
             let this_contract = get_contract_address();
+            let is_last_redeemer = shares == total_supply;
             let mut i: u32 = 0;
             while i < collateral_count {
                 let asset = self.inscription_collateral_assets.read((inscription_id, i));
@@ -1931,7 +1854,6 @@ pub mod StelaProtocol {
 
                 match asset.asset_type {
                     AssetType::ERC721 => {
-                        // NFTs can't be split — only full redemption. No fee for ERC721.
                         if tracked_balance > 0 {
                             self.inscription_collateral_balance.write((inscription_id, i), 0);
                             let erc721 = IERC721Dispatcher { contract_address: asset.asset };
@@ -1939,24 +1861,24 @@ pub mod StelaProtocol {
                         }
                     },
                     _ => {
-                        let amount = tracked_balance * shares / total_supply;
+                        let amount = if is_last_redeemer {
+                            tracked_balance
+                        } else {
+                            tracked_balance * shares / total_supply
+                        };
                         if amount > 0 {
                             self.inscription_collateral_balance.write((inscription_id, i), tracked_balance - amount);
 
                             match asset.asset_type {
                                 AssetType::ERC1155 => {
-                                    // No redeem fee for ERC1155
                                     let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
                                     erc1155
                                         .safe_transfer_from(this_contract, to, asset.token_id, amount, array![].span());
                                 },
                                 _ => {
-                                    // ERC20 and ERC4626: apply redeem fee
-                                    let net_amount = self._apply_redeem_fee(asset.asset, amount, to);
-                                    if net_amount > 0 {
-                                        let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                                        erc20.transfer(to, net_amount);
-                                    }
+                                    // ERC20 and ERC4626: no fee at redeem
+                                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                                    erc20.transfer(to, amount);
                                 },
                             }
                         }

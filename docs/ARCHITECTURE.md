@@ -21,7 +21,7 @@ The core contract. Manages the full inscription lifecycle: creation, signing, re
 
 **SNIP-12 domain metadata:** name = `'Stela'`, version = `'v1'`
 
-**Constructor:** `(owner, inscriptions_nft, registry, implementation_hash)` -- validates all non-zero, initializes ERC-1155 with empty base URI, sets default protocol fee to 10 BPS (0.1%), treasury defaults to owner.
+**Constructor:** `(owner, inscriptions_nft, registry, implementation_hash)` -- validates all non-zero, initializes ERC-1155 with empty base URI, treasury defaults to owner. Fee rates are hardcoded constants (not configurable).
 
 **Constants:** `MAX_ASSETS = 10` (asset array cap per type)
 
@@ -39,7 +39,7 @@ A SNIP-14 compliant account contract (`#[starknet::contract(account)]`) that ser
 
 ## Storage Layout
 
-### StelaProtocol Storage (23 protocol-specific variables + 6 component substorages)
+### StelaProtocol Storage (21 protocol-specific variables + 6 component substorages)
 
 ```cairo
 #[storage]
@@ -73,12 +73,10 @@ struct Storage {
     total_supply: Map<u256, u256>,               // inscription_id -> total shares
 
     // Protocol config
-    inscription_fee: u256,                       // protocol fee in BPS (default 10)
     treasury: ContractAddress,                   // fee recipient
     inscriptions_nft: ContractAddress,            // ERC-721 NFT contract
     registry: ContractAddress,                   // SNIP-14 TBA registry
     implementation_hash: felt252,                // LockerAccount class hash
-    relayer_fee: u256,                           // relayer fee in BPS for settle()
 
     // Signed order matching engine
     signed_orders: Map<felt252, bool>,            // order_hash -> registered?

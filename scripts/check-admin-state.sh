@@ -14,10 +14,6 @@ echo "--- Treasury ---"
 sncast call --contract-address "$STELA" --function get_treasury
 echo "--- Genesis Contract ---"
 sncast call --contract-address "$STELA" --function get_genesis_contract
-echo "--- Relayer Fee ---"
-sncast call --contract-address "$STELA" --function get_relayer_fee
-echo "--- Inscription Fee ---"
-sncast call --contract-address "$STELA" --function get_inscription_fee
 echo "--- Is Paused ---"
 sncast call --contract-address "$STELA" --function is_paused
 echo ""

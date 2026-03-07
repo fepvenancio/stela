@@ -5,7 +5,9 @@ use snforge_std::{
     stop_cheat_caller_address,
 };
 use stela::interfaces::istela::IStelaProtocolDispatcherTrait;
-use super::test_utils::{BORROWER, create_otc_swap_params, deploy_stela};
+use stela::types::asset::AssetType;
+use stela::types::inscription::InscriptionParams;
+use super::test_utils::{BORROWER, create_erc20_asset, create_otc_swap_params, deploy_stela};
 
 // ============================================================
 //                    OTC SWAP TESTS
@@ -61,4 +63,30 @@ fn test_otc_swap_no_interest() {
 
     stop_cheat_caller_address(contract_address);
     stop_cheat_block_timestamp_global();
+}
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: swap no multi lender')]
+fn test_swap_rejects_multi_lender() {
+    let (contract_address, stela) = deploy_stela();
+
+    start_cheat_block_timestamp_global(1000);
+    start_cheat_caller_address(contract_address, BORROWER());
+
+    let debt_token = starknet::contract_address_const::<'DEBT'>();
+    let collateral_token = starknet::contract_address_const::<'COL'>();
+
+    // duration=0 + multi_lender=true should be rejected
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(debt_token, 1000)],
+        interest_assets: array![],
+        collateral_assets: array![create_erc20_asset(collateral_token, 500)],
+        duration: 0,
+        deadline: 2000,
+        multi_lender: true,
+    };
+
+    stela.create_inscription(params);
 }
