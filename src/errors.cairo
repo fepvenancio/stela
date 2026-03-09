@@ -34,6 +34,9 @@ pub mod Errors {
     pub const FORBIDDEN_SELECTOR: felt252 = 'STELA: forbidden selector';
     pub const INVALID_ADDRESS: felt252 = 'STELA: invalid address';
 
+    // --- Governance voting ---
+    pub const UNSAFE_SELECTOR: felt252 = 'STELA: unsafe selector';
+
     // --- Admin / config ---
     pub const ZERO_IMPL_HASH: felt252 = 'STELA: zero impl hash';
 

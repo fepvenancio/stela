@@ -42,7 +42,7 @@ Requires [Scarb](https://docs.swmansion.com/scarb/download.html) and [StarkNet F
 
 ```bash
 scarb build          # Compile contracts
-snforge test         # Run all tests (147 tests)
+snforge test         # Run all tests (163 tests)
 ```
 
 ## Project Structure
@@ -77,6 +77,7 @@ tests/
 ├── test_e2e.cairo           # Full lifecycle integration
 ├── test_hash_compat.cairo   # SNIP-12 hash compatibility tests
 ├── test_security.cairo      # Security invariant tests
+├── test_governance_voting.cairo # Borrower governance selector tests
 ├── test_utils.cairo         # Test helpers & deployment
 └── mocks/                   # Mock contracts (ERC20, ERC721, registry)
 
@@ -121,12 +122,14 @@ The contract composes several OpenZeppelin Cairo components:
 - `cancel_order(order)` — Cancel a specific signed order
 - `cancel_orders_by_nonce(min_nonce)` — Batch-cancel all orders below a nonce
 
-**Admin:**
-- `set_inscription_fee(fee)` / `set_relayer_fee(fee)` — Configure fees (BPS)
+**Borrower Actions:**
+- `set_borrower_governance_selector(inscription_id, target, selector, allowed)` — Enable/disable governance voting on locked collateral (vote/delegate/delegate_by_sig only)
+
+**Admin (owner only):**
 - `set_treasury(treasury)` — Set fee recipient
 - `set_registry(registry)` / `set_inscriptions_nft(nft)` — Configure NFT contracts
 - `set_implementation_hash(hash)` — Set locker class hash for TBA deployment
-- `set_locker_allowed_selector(locker, selector, allowed)` — Manage locker allowlist
+- `set_locker_allowed_selector(locker, target, selector, allowed)` — Manage locker allowlist
 - `pause()` / `unpause()` — Emergency controls
 
 ## SNIP-12 Typed Data
@@ -162,7 +165,7 @@ All contracts have permanently renounced admin ownership. See [DECENTRALIZATION.
 
 | Contract | Address | Owner |
 |----------|---------|-------|
-| StelaProtocol | `0x012998e49cc8205d0bb56b5c10202bd32994091b1cacdb7bcbd03dc6781d4974` | `0x0` (renounced) |
+| StelaProtocol | `0x038a0b195e011fbfd75e9bce9bbc4137ebc5296882e11c5769c333b90bda4f89` | `0x0` (renounced) |
 | StelaGenesis NFT | `0x0265ea52ffbf1b7e1a029b94fe1a2023899dd0bc02eb1f11c9b04ea90e957d28` | `0x0` (renounced) |
 
 See `deployments/sepolia/deployedAddresses.json` for the full deployment manifest and `docs/deployment.md` for procedures.
@@ -178,6 +181,23 @@ The protocol includes guards against:
 - Gas griefing via unbounded asset arrays (capped at 10 per type)
 - SNIP-12 signature replay via NoncesComponent
 - Length-extension attacks on asset hash arrays (length-prefixed Poseidon)
+- ERC1155 safe_transfer_from reverts — Locker implements ERC1155ReceiverComponent + SRC5
+- Collateral stuck after repay — auto-returned to borrower via `_return_collateral_to_borrower`
+- Unsafe governance selectors — only `vote`, `delegate`, `delegate_by_sig` allowed for borrower-callable locker configuration
+
+### Collateral Lifecycle
+
+```
+1. Create    — Collateral stays with borrower (approved to Stela)
+2. Sign      — Collateral transferred to Locker TBA (locked)
+3. Repay     — Collateral auto-returned from Locker → Stela → Borrower, then Locker unlocked
+   — OR —
+3. Liquidate — Collateral pulled from Locker → Stela, lenders redeem pro-rata
+```
+
+### Governance Voting While Locked
+
+Borrowers can enable safe governance selectors on their locker via `set_borrower_governance_selector()`. Only three selectors are permitted: `vote`, `delegate`, and `delegate_by_sig`. This allows borrowers to participate in DAO governance with locked collateral without risking asset transfers.
 
 See `docs/security.md` for the full threat model and `docs/SPEC.md` for known limitations.
 

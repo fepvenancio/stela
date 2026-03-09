@@ -49,6 +49,11 @@ pub mod StelaProtocol {
     const SETTLE_TREASURY_FLOOR: u256 = 10;    // Minimum treasury on settle after discount
     const SWAP_TREASURY_FLOOR: u256 = 5;       // Minimum treasury on swap after discount
 
+    // Safe governance selectors — borrowers can enable these on their locker
+    const SAFE_VOTE: felt252 = selector!("vote");
+    const SAFE_DELEGATE: felt252 = selector!("delegate");
+    const SAFE_DELEGATE_BY_SIG: felt252 = selector!("delegate_by_sig");
+
     // Discount constants
     const BASE_NFT_DISCOUNT_PCT: u256 = 15;    // 15% discount for holding any Genesis NFT
     const VOLUME_TIER_DISCOUNT_PCT: u256 = 5;  // 5% per volume tier
@@ -178,6 +183,7 @@ pub mod StelaProtocol {
         OrderFilled: OrderFilled,
         OrderCancelled: OrderCancelled,
         OrdersBulkCancelled: OrdersBulkCancelled,
+        CollateralReturned: CollateralReturned,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -267,6 +273,14 @@ pub mod StelaProtocol {
         #[key]
         pub maker: ContractAddress,
         pub new_min_nonce: felt252,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct CollateralReturned {
+        #[key]
+        pub inscription_id: u256,
+        pub borrower: ContractAddress,
+        pub asset_count: u32,
     }
 
     // SNIP-12 domain metadata (used by OffchainMessageHash)
@@ -509,9 +523,17 @@ pub mod StelaProtocol {
             inscription.is_repaid = true;
             self.inscriptions.write(inscription_id, inscription);
 
-            // Unlock collateral (release back to borrower)
+            // Return collateral to borrower, then unlock locker for any strays
             let locker = self.lockers.read(inscription_id);
             if !locker.is_zero() {
+                self
+                    ._return_collateral_to_borrower(
+                        locker,
+                        caller,
+                        inscription_id,
+                        inscription.collateral_asset_count,
+                        inscription.issued_debt_percentage,
+                    );
                 let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
                 locker_dispatcher.unlock();
             }
@@ -1021,6 +1043,42 @@ pub mod StelaProtocol {
         ) {
             self.ownable.assert_only_owner();
             assert(self.is_locker.read(locker), Errors::INVALID_ADDRESS);
+            let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
+            locker_dispatcher.set_allowed_selector(target, selector, allowed);
+        }
+
+        /// Allow borrower to enable/disable safe governance selectors on their locker.
+        /// Only vote, delegate, and delegate_by_sig are permitted.
+        fn set_borrower_governance_selector(
+            ref self: ContractState,
+            inscription_id: u256,
+            target: ContractAddress,
+            selector: felt252,
+            allowed: bool,
+        ) {
+            self.pausable.assert_not_paused();
+
+            let caller = get_caller_address();
+            let inscription = self.inscriptions.read(inscription_id);
+
+            // Only borrower can configure governance selectors
+            assert(caller == inscription.borrower, Errors::UNAUTHORIZED);
+            // Inscription must be active (signed, not repaid/liquidated)
+            assert(inscription.signed_at > 0, Errors::INVALID_INSCRIPTION);
+            assert(!inscription.is_repaid, Errors::ALREADY_REPAID);
+            assert(!inscription.liquidated, Errors::ALREADY_LIQUIDATED);
+
+            // Only safe governance selectors allowed
+            assert(
+                selector == SAFE_VOTE
+                    || selector == SAFE_DELEGATE
+                    || selector == SAFE_DELEGATE_BY_SIG,
+                Errors::UNSAFE_SELECTOR,
+            );
+
+            let locker = self.lockers.read(inscription_id);
+            assert(!locker.is_zero(), Errors::INVALID_ADDRESS);
+
             let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
             locker_dispatcher.set_allowed_selector(target, selector, allowed);
         }
@@ -1773,6 +1831,80 @@ pub mod StelaProtocol {
 
             let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
             locker_dispatcher.pull_assets(assets);
+        }
+
+        /// Return collateral from locker to borrower on repayment.
+        /// Pulls assets from locker to this contract, then transfers to borrower.
+        fn _return_collateral_to_borrower(
+            ref self: ContractState,
+            locker: ContractAddress,
+            borrower: ContractAddress,
+            inscription_id: u256,
+            collateral_count: u32,
+            issued_debt_percentage: u256,
+        ) {
+            let this_contract = get_contract_address();
+            let mut pull_assets: Array<Asset> = array![];
+            let mut i: u32 = 0;
+            while i < collateral_count {
+                let asset = self.inscription_collateral_assets.read((inscription_id, i));
+                let pull_asset = match asset.asset_type {
+                    AssetType::ERC721 => asset,
+                    _ => {
+                        let scaled_value = scale_by_percentage(
+                            asset.value, issued_debt_percentage,
+                        );
+                        Asset {
+                            asset: asset.asset,
+                            asset_type: asset.asset_type,
+                            value: scaled_value,
+                            token_id: asset.token_id,
+                        }
+                    },
+                };
+                pull_assets.append(pull_asset);
+                i += 1;
+            };
+
+            // Pull from locker to this contract
+            let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
+            locker_dispatcher.pull_assets(pull_assets);
+
+            // Transfer from this contract to borrower
+            let mut j: u32 = 0;
+            while j < collateral_count {
+                let asset = self.inscription_collateral_assets.read((inscription_id, j));
+                match asset.asset_type {
+                    AssetType::ERC721 => {
+                        let erc721 = IERC721Dispatcher { contract_address: asset.asset };
+                        erc721.transfer_from(this_contract, borrower, asset.token_id);
+                    },
+                    AssetType::ERC1155 => {
+                        let amount = scale_by_percentage(asset.value, issued_debt_percentage);
+                        if amount > 0 {
+                            let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
+                            erc1155.safe_transfer_from(
+                                this_contract, borrower, asset.token_id, amount, array![].span(),
+                            );
+                        }
+                    },
+                    _ => {
+                        let amount = scale_by_percentage(asset.value, issued_debt_percentage);
+                        if amount > 0 {
+                            let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                            erc20.transfer(borrower, amount);
+                        }
+                    },
+                }
+                j += 1;
+            };
+
+            self
+                .emit(
+                    CollateralReturned {
+                        inscription_id, borrower, asset_count: collateral_count,
+                    },
+                );
         }
 
         /// Redeem debt assets using tracked per-inscription balances.

@@ -102,4 +102,13 @@ pub trait IStelaProtocol<TContractState> {
         selector: felt252,
         allowed: bool,
     );
+
+    /// Allow borrower to enable/disable safe governance selectors on their locker.
+    fn set_borrower_governance_selector(
+        ref self: TContractState,
+        inscription_id: u256,
+        target: ContractAddress,
+        selector: felt252,
+        allowed: bool,
+    );
 }

@@ -859,8 +859,9 @@ fn test_exact_token_amounts_lifecycle() {
     // Stela contract holds the repaid tokens
     assert(setup.debt_token.balance_of(stela_address) == debt_amount, 'stela holds debt');
     assert(setup.interest_token.balance_of(stela_address) == interest_amount, 'stela holds interest');
-    // Locker is unlocked — borrower can reclaim collateral
-    assert(setup.collateral_token.balance_of(locker) == collateral_amount, 'locker still has col');
+    // Collateral auto-returned to borrower on repay
+    assert(setup.collateral_token.balance_of(BORROWER()) == collateral_amount, 'borrower got col back');
+    assert(setup.collateral_token.balance_of(locker) == 0, 'locker drained of col');
 
     // Redeem
     let lender_shares = get_shares(stela_address, LENDER(), inscription_id);

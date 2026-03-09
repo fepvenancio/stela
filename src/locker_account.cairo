@@ -258,10 +258,6 @@ pub mod LockerAccount {
     /// Transfer a single asset to a destination.
     fn _transfer_asset(asset: Asset, from: ContractAddress, to: ContractAddress) {
         match asset.asset_type {
-            AssetType::ERC20 => {
-                let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                erc20.transfer(to, asset.value);
-            },
             AssetType::ERC721 => {
                 let erc721 = IERC721Dispatcher { contract_address: asset.asset };
                 erc721.transfer_from(from, to, asset.token_id);
@@ -270,8 +266,7 @@ pub mod LockerAccount {
                 let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
                 erc1155.safe_transfer_from(from, to, asset.token_id, asset.value, array![].span());
             },
-            AssetType::ERC4626 => {
-                // ERC4626 is ERC20-compatible
+            _ => {
                 let erc20 = IERC20Dispatcher { contract_address: asset.asset };
                 erc20.transfer(to, asset.value);
             },
