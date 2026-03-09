@@ -6,7 +6,10 @@
 
 #[starknet::contract(account)]
 pub mod LockerAccount {
+    use openzeppelin_interfaces::accounts::ISRC6_ID;
     use openzeppelin_interfaces::erc1155::{IERC1155Dispatcher, IERC1155DispatcherTrait};
+    use openzeppelin_introspection::src5::SRC5Component;
+    use openzeppelin_token::erc1155::ERC1155ReceiverComponent;
 
     // Token dispatchers
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
@@ -18,6 +21,23 @@ pub mod LockerAccount {
     // Local imports
     use crate::errors::Errors;
     use crate::types::asset::{Asset, AssetType};
+
+    // Components for ERC1155 receiver support + SRC5 introspection
+    component!(path: SRC5Component, storage: src5, event: SRC5Event);
+    component!(path: ERC1155ReceiverComponent, storage: erc1155_receiver, event: ERC1155ReceiverEvent);
+
+    // Expose SRC5 supports_interface externally
+    #[abi(embed_v0)]
+    impl SRC5Impl = SRC5Component::SRC5Impl<ContractState>;
+
+    // Expose ERC1155 receiver hooks externally (on_erc1155_received, on_erc1155_batch_received)
+    #[abi(embed_v0)]
+    impl ERC1155ReceiverImpl = ERC1155ReceiverComponent::ERC1155ReceiverImpl<ContractState>;
+    #[abi(embed_v0)]
+    impl ERC1155ReceiverCamelImpl = ERC1155ReceiverComponent::ERC1155ReceiverCamelImpl<ContractState>;
+
+    impl ERC1155ReceiverInternalImpl = ERC1155ReceiverComponent::InternalImpl<ContractState>;
+    impl SRC5InternalImpl = SRC5Component::InternalImpl<ContractState>;
 
     // ============================================================
     //                          STORAGE
@@ -31,6 +51,12 @@ pub mod LockerAccount {
         unlocked: bool,
         // Allowlist: (target, selector) -> bool. Only these pairs can be called while locked.
         allowed_selectors: Map<(ContractAddress, felt252), bool>,
+        // SRC5 introspection storage
+        #[substorage(v0)]
+        src5: SRC5Component::Storage,
+        // ERC1155 receiver storage
+        #[substorage(v0)]
+        erc1155_receiver: ERC1155ReceiverComponent::Storage,
     }
 
     // ============================================================
@@ -43,6 +69,10 @@ pub mod LockerAccount {
         LockerUnlocked: LockerUnlocked,
         AssetsPulled: AssetsPulled,
         AllowedSelectorUpdated: AllowedSelectorUpdated,
+        #[flat]
+        SRC5Event: SRC5Component::Event,
+        #[flat]
+        ERC1155ReceiverEvent: ERC1155ReceiverComponent::Event,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -75,6 +105,11 @@ pub mod LockerAccount {
     fn constructor(ref self: ContractState, stela_contract: ContractAddress) {
         self.stela_contract.write(stela_contract);
         self.unlocked.write(false);
+
+        // Register ERC1155 receiver interface (required for safe_transfer_from)
+        self.erc1155_receiver.initializer();
+        // Register ISRC6 (account interface) for ERC721 safe transfer fallback
+        self.src5.register_interface(ISRC6_ID);
     }
 
     // ============================================================
