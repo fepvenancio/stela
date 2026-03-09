@@ -329,7 +329,7 @@ pub mod StelaProtocol {
     impl StelaProtocolImpl of crate::interfaces::istela::IStelaProtocol<ContractState> {
         /// Create a new inscription. Returns the inscription ID.
         fn create_inscription(ref self: ContractState, params: InscriptionParams) -> u256 {
-
+            self.reentrancy_guard.start();
 
             let caller = get_caller_address();
             let timestamp = get_block_timestamp();
@@ -414,11 +414,13 @@ pub mod StelaProtocol {
             // Emit event
             self.emit(InscriptionCreated { inscription_id, creator: caller, is_borrow: params.is_borrow });
 
+            self.reentrancy_guard.end();
             inscription_id
         }
 
         /// Cancel an unfilled inscription. Only callable by the creator.
         fn cancel_inscription(ref self: ContractState, inscription_id: u256) {
+            self.reentrancy_guard.start();
             let caller = get_caller_address();
 
             // Load inscription
@@ -461,6 +463,7 @@ pub mod StelaProtocol {
 
             // Emit event
             self.emit(InscriptionCancelled { inscription_id, creator: caller });
+            self.reentrancy_guard.end();
         }
 
         /// Fill/sign an existing inscription by providing debt capital as lender (or collateral as borrower).
