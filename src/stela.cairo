@@ -1038,7 +1038,7 @@ pub mod StelaProtocol {
             selector: felt252,
             allowed: bool,
         ) {
-
+            self.reentrancy_guard.start();
 
             let caller = get_caller_address();
             let inscription = self.inscriptions.read(inscription_id);
@@ -1069,6 +1069,8 @@ pub mod StelaProtocol {
 
             let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
             locker_dispatcher.set_allowed_selector(target, selector, allowed);
+
+            self.reentrancy_guard.end();
         }
     }
 
