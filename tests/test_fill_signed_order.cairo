@@ -111,7 +111,6 @@ fn deploy_fill_setup() -> FillSetup {
     nft_address.serialize(ref stela_calldata);
     OWNER().serialize(ref stela_calldata); // placeholder registry
     stela_calldata.append(locker_class_hash);
-    OWNER().serialize(ref stela_calldata); // pauser
     let (stela_address, _) = stela_contract.deploy(@stela_calldata).unwrap();
     let stela = IStelaProtocolDispatcher { contract_address: stela_address };
 

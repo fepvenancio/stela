@@ -7,7 +7,7 @@ use snforge_std::{
 use stela::interfaces::istela::IStelaProtocolDispatcherTrait;
 use stela::utils::share_math::MAX_BPS;
 use crate::test_utils::{
-    BORROWER, LENDER, deploy_full_setup,
+    BORROWER, LENDER, OWNER, deploy_full_setup,
     setup_borrower_with_collateral, setup_lender_with_debt,
     create_borrow_params_from_setup,
 };
@@ -15,6 +15,13 @@ use crate::test_utils::{
 #[feature("deprecated-starknet-consts")]
 fn GOVERNANCE_TARGET() -> starknet::ContractAddress {
     starknet::contract_address_const::<'GOV_TARGET'>()
+}
+
+/// Helper: whitelist governance target as owner
+fn whitelist_governance_target(setup: @crate::test_utils::TestSetup) {
+    start_cheat_caller_address(*setup.stela_address, OWNER());
+    (*setup.stela).set_governance_target(GOVERNANCE_TARGET(), true);
+    stop_cheat_caller_address(*setup.stela_address);
 }
 
 /// Helper: create and sign an inscription, return inscription_id
@@ -47,9 +54,9 @@ fn create_signed_inscription(
 #[feature("deprecated-starknet-consts")]
 fn test_borrower_can_set_vote_selector() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
-    // Borrower enables vote selector
     start_cheat_caller_address(setup.stela_address, BORROWER());
     setup.stela.set_borrower_governance_selector(
         inscription_id, GOVERNANCE_TARGET(), selector!("vote"), true,
@@ -63,6 +70,7 @@ fn test_borrower_can_set_vote_selector() {
 #[feature("deprecated-starknet-consts")]
 fn test_borrower_can_set_delegate_selector() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
     start_cheat_caller_address(setup.stela_address, BORROWER());
@@ -78,6 +86,7 @@ fn test_borrower_can_set_delegate_selector() {
 #[feature("deprecated-starknet-consts")]
 fn test_borrower_can_set_delegate_by_sig_selector() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
     start_cheat_caller_address(setup.stela_address, BORROWER());
@@ -93,6 +102,7 @@ fn test_borrower_can_set_delegate_by_sig_selector() {
 #[feature("deprecated-starknet-consts")]
 fn test_borrower_can_disable_selector() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
     start_cheat_caller_address(setup.stela_address, BORROWER());
@@ -117,9 +127,10 @@ fn test_borrower_can_disable_selector() {
 #[should_panic(expected: 'STELA: unsafe selector')]
 fn test_unsafe_selector_rejected() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
-    // Try to set transfer selector — should fail
+    // Try to set transfer selector — should fail (unsafe selector, before target check)
     start_cheat_caller_address(setup.stela_address, BORROWER());
     setup.stela.set_borrower_governance_selector(
         inscription_id, GOVERNANCE_TARGET(), selector!("transfer"), true,
@@ -134,6 +145,7 @@ fn test_unsafe_selector_rejected() {
 #[should_panic(expected: 'STELA: unsafe selector')]
 fn test_approve_selector_rejected() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
     start_cheat_caller_address(setup.stela_address, BORROWER());
@@ -147,9 +159,27 @@ fn test_approve_selector_rejected() {
 
 #[test]
 #[feature("deprecated-starknet-consts")]
+#[should_panic(expected: 'STELA: gov target not allowed')]
+fn test_non_whitelisted_target_rejected() {
+    let setup = deploy_full_setup();
+    // Do NOT whitelist target
+    let inscription_id = create_signed_inscription(@setup);
+
+    start_cheat_caller_address(setup.stela_address, BORROWER());
+    setup.stela.set_borrower_governance_selector(
+        inscription_id, GOVERNANCE_TARGET(), selector!("vote"), true,
+    );
+    stop_cheat_caller_address(setup.stela_address);
+
+    stop_cheat_block_timestamp_global();
+}
+
+#[test]
+#[feature("deprecated-starknet-consts")]
 #[should_panic(expected: 'STELA: unauthorized')]
 fn test_non_borrower_cannot_set_selector() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     let inscription_id = create_signed_inscription(@setup);
 
     // Lender tries to set selector — should fail
@@ -167,6 +197,7 @@ fn test_non_borrower_cannot_set_selector() {
 #[should_panic(expected: 'STELA: invalid inscription')]
 fn test_unsigned_inscription_rejected() {
     let setup = deploy_full_setup();
+    whitelist_governance_target(@setup);
     setup_borrower_with_collateral(@setup, BORROWER(), 5000);
 
     start_cheat_block_timestamp_global(1000);

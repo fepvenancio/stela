@@ -36,6 +36,13 @@ pub mod Errors {
 
     // --- Governance voting ---
     pub const UNSAFE_SELECTOR: felt252 = 'STELA: unsafe selector';
+    pub const GOVERNANCE_TARGET_NOT_WHITELISTED: felt252 = 'STELA: gov target not allowed';
+
+    // --- Duration ---
+    pub const DURATION_TOO_LONG: felt252 = 'STELA: duration too long';
+
+    // --- Self-referential ---
+    pub const SELF_REFERENTIAL_ASSET: felt252 = 'STELA: self referential asset';
 
     // --- Admin / config ---
     pub const ZERO_IMPL_HASH: felt252 = 'STELA: zero impl hash';

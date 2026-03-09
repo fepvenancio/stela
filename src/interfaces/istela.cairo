@@ -67,7 +67,6 @@ pub trait IStelaProtocol<TContractState> {
     fn convert_to_shares(self: @TContractState, inscription_id: u256, issued_debt_percentage: u256) -> u256;
     fn nonces(self: @TContractState, owner: ContractAddress) -> felt252;
     fn get_treasury(self: @TContractState) -> ContractAddress;
-    fn is_paused(self: @TContractState) -> bool;
     fn is_order_registered(self: @TContractState, order_hash: felt252) -> bool;
     fn is_order_cancelled(self: @TContractState, order_hash: felt252) -> bool;
     fn get_filled_bps(self: @TContractState, order_hash: felt252) -> u256;
@@ -85,14 +84,10 @@ pub trait IStelaProtocol<TContractState> {
     fn set_volume_token_whitelisted(ref self: TContractState, token: ContractAddress, whitelisted: bool);
     fn set_genesis_contract(ref self: TContractState, genesis_contract: ContractAddress);
 
-    /// Pause the protocol. Only pauser.
-    fn pause(ref self: TContractState);
-    /// Unpause the protocol. Only pauser.
-    fn unpause(ref self: TContractState);
-    /// Get the emergency pauser address.
-    fn get_pauser(self: @TContractState) -> ContractAddress;
-    /// Set a new emergency pauser address. Only owner.
-    fn set_pauser(ref self: TContractState, new_pauser: ContractAddress);
+    /// Whitelist or remove a governance target contract. Only owner.
+    fn set_governance_target(ref self: TContractState, target: ContractAddress, whitelisted: bool);
+    /// Check if a governance target is whitelisted.
+    fn is_governance_target_whitelisted(self: @TContractState, target: ContractAddress) -> bool;
 
     /// Set an allowed (target, selector) pair on a locker. Only owner.
     fn set_locker_allowed_selector(

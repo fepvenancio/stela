@@ -121,7 +121,6 @@ fn deploy_discount_setup() -> DiscountSetup {
     nft_address.serialize(ref stela_calldata);
     TREASURY().serialize(ref stela_calldata); // placeholder registry
     stela_calldata.append(locker_class_hash);
-    OWNER().serialize(ref stela_calldata); // pauser
     let (stela_address, _) = stela_contract.deploy(@stela_calldata).unwrap();
     let stela = IStelaProtocolDispatcher { contract_address: stela_address };
 

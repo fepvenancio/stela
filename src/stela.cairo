@@ -18,7 +18,6 @@ pub mod StelaProtocol {
     use openzeppelin_interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
     use openzeppelin_interfaces::erc721::{IERC721Dispatcher, IERC721DispatcherTrait};
     use openzeppelin_introspection::src5::SRC5Component;
-    use openzeppelin_security::pausable::PausableComponent;
     use openzeppelin_security::reentrancyguard::ReentrancyGuardComponent;
 
     // OpenZeppelin components
@@ -54,6 +53,9 @@ pub mod StelaProtocol {
     const SAFE_DELEGATE: felt252 = selector!("delegate");
     const SAFE_DELEGATE_BY_SIG: felt252 = selector!("delegate_by_sig");
 
+    // Maximum loan duration: 365 days (prevents u64 overflow in signed_at + duration)
+    const MAX_DURATION: u64 = 31_536_000;
+
     // Discount constants
     const BASE_NFT_DISCOUNT_PCT: u256 = 15;    // 15% discount for holding any Genesis NFT
     const VOLUME_TIER_DISCOUNT_PCT: u256 = 5;  // 5% per volume tier
@@ -75,7 +77,6 @@ pub mod StelaProtocol {
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
     component!(path: SRC5Component, storage: src5, event: SRC5Event);
     component!(path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent);
-    component!(path: PausableComponent, storage: pausable, event: PausableEvent);
     component!(path: NoncesComponent, storage: nonces, event: NoncesEvent);
 
     // ERC1155 Mixin — exposes standard ERC1155 functions externally
@@ -90,10 +91,6 @@ pub mod StelaProtocol {
 
     // ReentrancyGuard
     impl ReentrancyGuardInternalImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
-
-    // Pausable
-    impl PausableImpl = PausableComponent::PausableImpl<ContractState>;
-    impl PausableInternalImpl = PausableComponent::InternalImpl<ContractState>;
 
     // Nonces
     impl NoncesInternalImpl = NoncesComponent::InternalImpl<ContractState>;
@@ -113,8 +110,6 @@ pub mod StelaProtocol {
         src5: SRC5Component::Storage,
         #[substorage(v0)]
         reentrancy_guard: ReentrancyGuardComponent::Storage,
-        #[substorage(v0)]
-        pausable: PausableComponent::Storage,
         #[substorage(v0)]
         nonces: NoncesComponent::Storage,
         // Protocol storage
@@ -150,8 +145,11 @@ pub mod StelaProtocol {
         volume_settled: Map<ContractAddress, u256>,
         // Token whitelist for volume tracking (prevents gaming with worthless tokens)
         volume_token_whitelisted: Map<ContractAddress, bool>,
-        // Emergency pauser (survives ownership renouncement)
-        pauser: ContractAddress,
+        // Locker collateral deposits tracking (actual amounts deposited per asset index)
+        // Prevents rounding dust issues when pulling from locker in multi-lender fills
+        locker_collateral_deposited: Map<(u256, u32), u256>,
+        // Whitelisted governance targets (for set_borrower_governance_selector)
+        governance_target_whitelisted: Map<ContractAddress, bool>,
     }
 
     // ============================================================
@@ -169,8 +167,6 @@ pub mod StelaProtocol {
         SRC5Event: SRC5Component::Event,
         #[flat]
         ReentrancyGuardEvent: ReentrancyGuardComponent::Event,
-        #[flat]
-        PausableEvent: PausableComponent::Event,
         #[flat]
         NoncesEvent: NoncesComponent::Event,
         InscriptionCreated: InscriptionCreated,
@@ -307,14 +303,12 @@ pub mod StelaProtocol {
         inscriptions_nft: ContractAddress,
         registry: ContractAddress,
         implementation_hash: felt252,
-        pauser: ContractAddress,
     ) {
         // Validate non-zero addresses and implementation hash
         assert(!owner.is_zero(), Errors::INVALID_ADDRESS);
         assert(!inscriptions_nft.is_zero(), Errors::INVALID_ADDRESS);
         assert(!registry.is_zero(), Errors::INVALID_ADDRESS);
         assert(implementation_hash != 0, Errors::ZERO_IMPL_HASH);
-        assert(!pauser.is_zero(), Errors::INVALID_ADDRESS);
 
         // Initialize ERC1155 with empty base URI
         self.erc1155.initializer("");
@@ -325,8 +319,6 @@ pub mod StelaProtocol {
         self.inscriptions_nft.write(inscriptions_nft);
         self.registry.write(registry);
         self.implementation_hash.write(implementation_hash);
-        // Emergency pauser — survives ownership renouncement
-        self.pauser.write(pauser);
     }
 
     // ============================================================
@@ -337,7 +329,7 @@ pub mod StelaProtocol {
     impl StelaProtocolImpl of crate::interfaces::istela::IStelaProtocol<ContractState> {
         /// Create a new inscription. Returns the inscription ID.
         fn create_inscription(ref self: ContractState, params: InscriptionParams) -> u256 {
-            self.pausable.assert_not_paused();
+
 
             let caller = get_caller_address();
             let timestamp = get_block_timestamp();
@@ -356,6 +348,9 @@ pub mod StelaProtocol {
             self._validate_assets(params.debt_assets.span());
             self._validate_assets(params.collateral_assets.span());
             self._validate_assets(params.interest_assets.span());
+
+            // Duration cap — prevents u64 overflow in signed_at + duration
+            assert(params.duration <= MAX_DURATION, Errors::DURATION_TOO_LONG);
 
             // ERC721 cannot be used as debt or interest — NFTs aren't fungible
             // and can't be scaled by percentage for partial fills or pro-rata redemption
@@ -474,7 +469,7 @@ pub mod StelaProtocol {
         /// On first fill: mints NFT to borrower, creates TBA locker, sets signed_at.
         /// For instant swaps (duration=0): collateral goes directly to contract, marked liquidated.
         fn sign_inscription(ref self: ContractState, inscription_id: u256, issued_debt_percentage: u256) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -485,7 +480,7 @@ pub mod StelaProtocol {
 
         /// Repay an active inscription. Only callable by the borrower.
         fn repay(ref self: ContractState, inscription_id: u256) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -546,7 +541,7 @@ pub mod StelaProtocol {
 
         /// Liquidate an expired, unrepaid inscription.
         fn liquidate(ref self: ContractState, inscription_id: u256) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -590,7 +585,7 @@ pub mod StelaProtocol {
 
         /// Redeem shares for underlying assets.
         fn redeem(ref self: ContractState, inscription_id: u256, shares: u256) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -670,11 +665,6 @@ pub mod StelaProtocol {
             self.treasury.read()
         }
 
-        /// Check if the protocol is currently paused.
-        fn is_paused(self: @ContractState) -> bool {
-            self.pausable.is_paused()
-        }
-
         /// Returns true if the order has been registered on-chain (first fill completed).
         fn is_order_registered(self: @ContractState, order_hash: felt252) -> bool {
             self.signed_orders.read(order_hash)
@@ -741,7 +731,7 @@ pub mod StelaProtocol {
             offer: LendOffer,
             lender_sig: Array<felt252>,
         ) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -787,7 +777,7 @@ pub mod StelaProtocol {
             lender_sig: Array<felt252>,
             bps_list: Array<u256>,
         ) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -877,7 +867,7 @@ pub mod StelaProtocol {
         fn fill_signed_order(
             ref self: ContractState, order: SignedOrder, signature: Array<felt252>, fill_bps: u256,
         ) {
-            self.pausable.assert_not_paused();
+
             self.reentrancy_guard.start();
 
             let caller = get_caller_address();
@@ -1009,28 +999,17 @@ pub mod StelaProtocol {
             self.genesis_contract.write(genesis_contract);
         }
 
-        /// Pause the protocol. Only pauser.
-        fn pause(ref self: ContractState) {
-            assert(get_caller_address() == self.pauser.read(), Errors::UNAUTHORIZED);
-            self.pausable.pause();
-        }
-
-        /// Unpause the protocol. Only pauser.
-        fn unpause(ref self: ContractState) {
-            assert(get_caller_address() == self.pauser.read(), Errors::UNAUTHORIZED);
-            self.pausable.unpause();
-        }
-
-        /// Get the emergency pauser address.
-        fn get_pauser(self: @ContractState) -> ContractAddress {
-            self.pauser.read()
-        }
-
-        /// Set a new emergency pauser address. Only owner.
-        fn set_pauser(ref self: ContractState, new_pauser: ContractAddress) {
+        /// Whitelist or remove a governance target contract. Only owner.
+        /// Borrowers can only call set_borrower_governance_selector on whitelisted targets.
+        fn set_governance_target(ref self: ContractState, target: ContractAddress, whitelisted: bool) {
             self.ownable.assert_only_owner();
-            assert(!new_pauser.is_zero(), Errors::INVALID_ADDRESS);
-            self.pauser.write(new_pauser);
+            assert(!target.is_zero(), Errors::INVALID_ADDRESS);
+            self.governance_target_whitelisted.write(target, whitelisted);
+        }
+
+        /// Check if a governance target is whitelisted.
+        fn is_governance_target_whitelisted(self: @ContractState, target: ContractAddress) -> bool {
+            self.governance_target_whitelisted.read(target)
         }
 
         /// Add or remove an allowed (target, selector) pair on a specific locker TBA.
@@ -1056,7 +1035,7 @@ pub mod StelaProtocol {
             selector: felt252,
             allowed: bool,
         ) {
-            self.pausable.assert_not_paused();
+
 
             let caller = get_caller_address();
             let inscription = self.inscriptions.read(inscription_id);
@@ -1074,6 +1053,12 @@ pub mod StelaProtocol {
                     || selector == SAFE_DELEGATE
                     || selector == SAFE_DELEGATE_BY_SIG,
                 Errors::UNSAFE_SELECTOR,
+            );
+
+            // Target must be whitelisted governance contract (prevents proxy bypass attacks)
+            assert(
+                self.governance_target_whitelisted.read(target),
+                Errors::GOVERNANCE_TARGET_NOT_WHITELISTED,
             );
 
             let locker = self.lockers.read(inscription_id);
@@ -1130,6 +1115,9 @@ pub mod StelaProtocol {
             self._validate_assets(debt_assets);
             self._validate_assets(collateral_assets);
             self._validate_assets(interest_assets);
+
+            // Duration cap — prevents u64 overflow in signed_at + duration
+            assert(order.duration <= MAX_DURATION, Errors::DURATION_TOO_LONG);
 
             // ERC721 cannot be used as debt or interest
             self._validate_no_nfts(debt_assets);
@@ -1404,11 +1392,13 @@ pub mod StelaProtocol {
         /// Validate that each asset has a non-zero contract address
         /// and that fungible assets (ERC20/ERC4626/ERC1155) have value > 0.
         fn _validate_assets(self: @ContractState, assets: Span<Asset>) {
+            let this_contract = get_contract_address();
             let mut i: u32 = 0;
             let len = assets.len();
             while i < len {
                 let asset = *assets.at(i);
                 assert(!asset.asset.is_zero(), Errors::INVALID_ADDRESS);
+                assert(asset.asset != this_contract, Errors::SELF_REFERENTIAL_ASSET);
                 match asset.asset_type {
                     AssetType::ERC721 => {}, // NFTs use token_id, value can be 0
                     _ => { assert(asset.value > 0, Errors::ZERO_ASSET_VALUE); },
@@ -1567,6 +1557,7 @@ pub mod StelaProtocol {
         }
 
         /// Lock collateral from borrower to locker TBA.
+        /// Tracks actual deposited amounts to prevent rounding dust issues on pull.
         fn _lock_collateral(
             ref self: ContractState,
             from: ContractAddress,
@@ -1587,6 +1578,14 @@ pub mod StelaProtocol {
 
                 if should_transfer {
                     self._process_payment(asset, from, locker, percentage);
+
+                    // Track actual amount deposited to locker
+                    let deposited = match asset.asset_type {
+                        AssetType::ERC721 => 1_u256,
+                        _ => scale_by_percentage(asset.value, percentage),
+                    };
+                    let current = self.locker_collateral_deposited.read((inscription_id, i));
+                    self.locker_collateral_deposited.write((inscription_id, i), current + deposited);
                 }
 
                 i += 1;
@@ -1794,6 +1793,7 @@ pub mod StelaProtocol {
         }
 
         /// Pull collateral from locker to this contract.
+        /// Uses tracked locker deposits (not recomputed scale) to avoid rounding dust issues.
         fn _pull_collateral_from_locker(
             ref self: ContractState,
             locker: ContractAddress,
@@ -1811,14 +1811,15 @@ pub mod StelaProtocol {
                         (asset, 1_u256)
                     },
                     _ => {
-                        let scaled_value = scale_by_percentage(asset.value, issued_debt_percentage);
+                        // Use actual tracked deposits instead of recomputing to prevent rounding dust
+                        let deposited = self.locker_collateral_deposited.read((inscription_id, i));
                         let scaled_asset = Asset {
                             asset: asset.asset,
                             asset_type: asset.asset_type,
-                            value: scaled_value,
+                            value: deposited,
                             token_id: asset.token_id,
                         };
-                        (scaled_asset, scaled_value)
+                        (scaled_asset, deposited)
                     },
                 };
                 assets.append(pull_asset);
@@ -1835,6 +1836,7 @@ pub mod StelaProtocol {
 
         /// Return collateral from locker to borrower on repayment.
         /// Pulls assets from locker to this contract, then transfers to borrower.
+        /// Uses tracked locker deposits (not recomputed scale) to avoid rounding dust issues.
         fn _return_collateral_to_borrower(
             ref self: ContractState,
             locker: ContractAddress,
@@ -1851,13 +1853,12 @@ pub mod StelaProtocol {
                 let pull_asset = match asset.asset_type {
                     AssetType::ERC721 => asset,
                     _ => {
-                        let scaled_value = scale_by_percentage(
-                            asset.value, issued_debt_percentage,
-                        );
+                        // Use actual tracked deposits instead of recomputing
+                        let deposited = self.locker_collateral_deposited.read((inscription_id, i));
                         Asset {
                             asset: asset.asset,
                             asset_type: asset.asset_type,
-                            value: scaled_value,
+                            value: deposited,
                             token_id: asset.token_id,
                         }
                     },
@@ -1870,7 +1871,7 @@ pub mod StelaProtocol {
             let locker_dispatcher = ILockerAccountDispatcher { contract_address: locker };
             locker_dispatcher.pull_assets(pull_assets);
 
-            // Transfer from this contract to borrower
+            // Transfer from this contract to borrower (same tracked amounts)
             let mut j: u32 = 0;
             while j < collateral_count {
                 let asset = self.inscription_collateral_assets.read((inscription_id, j));
@@ -1879,20 +1880,21 @@ pub mod StelaProtocol {
                         let erc721 = IERC721Dispatcher { contract_address: asset.asset };
                         erc721.transfer_from(this_contract, borrower, asset.token_id);
                     },
-                    AssetType::ERC1155 => {
-                        let amount = scale_by_percentage(asset.value, issued_debt_percentage);
-                        if amount > 0 {
-                            let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
-                            erc1155.safe_transfer_from(
-                                this_contract, borrower, asset.token_id, amount, array![].span(),
-                            );
-                        }
-                    },
                     _ => {
-                        let amount = scale_by_percentage(asset.value, issued_debt_percentage);
+                        let amount = self.locker_collateral_deposited.read((inscription_id, j));
                         if amount > 0 {
-                            let erc20 = IERC20Dispatcher { contract_address: asset.asset };
-                            erc20.transfer(borrower, amount);
+                            match asset.asset_type {
+                                AssetType::ERC1155 => {
+                                    let erc1155 = IERC1155Dispatcher { contract_address: asset.asset };
+                                    erc1155.safe_transfer_from(
+                                        this_contract, borrower, asset.token_id, amount, array![].span(),
+                                    );
+                                },
+                                _ => {
+                                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                                    erc20.transfer(borrower, amount);
+                                },
+                            }
                         }
                     },
                 }
