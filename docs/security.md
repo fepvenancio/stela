@@ -298,7 +298,25 @@ All inputs validated non-zero:
 
 ---
 
-## 13. Known Limitations
+## 13. Pro-Rata Interest Safety
+
+Interest on early repayment is calculated using ceiling division to protect lenders:
+
+```
+pro_rata_interest = ceil(full_interest * elapsed / duration)
+```
+
+**Security properties:**
+- **Lender protection**: ceiling division ensures lender never receives less than owed — rounding always favors the lender
+- **Minimum charge**: even 1 second of elapsed time results in at least 1 wei of interest per asset
+- **No overflow**: intermediate `amount * elapsed` fits in u256 (u128 max × u64 max ≈ 2^192)
+- **Duration=0 bypass**: swaps (duration=0) always charge full interest — the `_pull_repayment` function checks for this before calling `pro_rata_interest`
+- **Tracked balances**: `inscription_interest_balance` stores the actual pro-rata amount deposited, so redeem distributes exactly what was paid — no rounding mismatch between deposit and withdrawal
+- **Last redeemer sweep**: uses tracked balance directly (not recomputed), so no dust is trapped
+
+---
+
+## 14. Known Limitations
 
 ### NFT Collateral Redemption
 In single-lender mode with ERC-721 collateral and fee shares, the NFT goes to the first redeemer. The treasury (holding fee shares) may get nothing for that NFT slot. Inherent to NFT indivisibility.
@@ -311,7 +329,7 @@ For multi-lender inscriptions not fully filled, repayment and liquidation scale 
 
 ---
 
-## 14. Error Codes Reference
+## 15. Error Codes Reference
 
 | Error Constant | Value | Triggered By |
 |---|---|---|

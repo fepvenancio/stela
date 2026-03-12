@@ -91,6 +91,43 @@ fee_shares = (shares * fee_bps) / MAX_BPS
 
 **Used by:** `sign_inscription()`, `settle()`, `fill_signed_order()` -- fee shares are minted to the treasury address.
 
+### div_ceil
+
+Ceiling division. Rounds UP — used by `pro_rata_interest` to protect lenders.
+
+```cairo
+pub fn div_ceil(a: u256, b: u256) -> u256
+```
+
+**Formula:**
+```
+result = (a + b - 1) / b
+```
+
+Panics if `b == 0` (Cairo built-in).
+
+### pro_rata_interest
+
+Calculates proportional interest for early repayment. Rounds UP (ceiling) so borrowers never underpay.
+
+```cairo
+pub fn pro_rata_interest(amount: u256, elapsed: u64, duration: u64) -> u256
+```
+
+**Formula:**
+```
+result = ceil(amount * elapsed / duration)
+```
+
+**Edge cases:**
+- `amount == 0` or `elapsed == 0` → returns 0
+- `elapsed >= duration` → returns `amount` (capped at full interest)
+- `duration == 0` → caller must handle (swaps use full interest)
+
+**Overflow safety:** `amount` (max u128) × `elapsed` (max u64) ≈ 2^192, fits in u256.
+
+**Used by:** `_pull_repayment()` -- to calculate the pro-rata interest amount when a borrower repays before the full duration has elapsed.
+
 ---
 
 ## Per-Inscription Balance Tracking
@@ -162,14 +199,15 @@ ERC-721 tokens cannot be split pro-rata. In `_redeem_collateral_assets`:
    fee_shares = 1e20 * 10 / 10000 = 1e17
    total_supply = 1e20 + 1e17 = 1.01e20
 
-2. Borrower repays 1000 USDC debt + 100 DAI interest
+2. Borrower repays 1000 USDC debt + pro-rata interest
+   At 50% elapsed: interest = ceil(100 * 0.5) = 50 DAI
    inscription_debt_balance[0] = 1000 USDC
-   inscription_interest_balance[0] = 100 DAI
+   inscription_interest_balance[0] = 50 DAI (pro-rata, not full 100)
 
 3. Lender redeems 1e20 shares (total_supply = 1.01e20)
    debt_amount = 1000 * 1e20 / 1.01e20 = 990 USDC (approx)
-   interest_amount = 100 * 1e20 / 1.01e20 = 99 DAI (approx)
-   [Fee shares remain -- treasury gets ~10 USDC + ~1 DAI]
+   interest_amount = 50 * 1e20 / 1.01e20 = 49.5 DAI (approx)
+   [Fee shares remain -- treasury gets ~10 USDC + ~0.5 DAI]
 ```
 
 ### Multi-Lender, Partial Fills

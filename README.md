@@ -6,7 +6,7 @@ Stela is a trustless peer-to-peer lending and OTC swap protocol. Borrowers creat
 
 ## Features
 
-- **P2P Lending** — No liquidity pools, no oracles. Direct borrower-lender inscriptions.
+- **P2P Lending** — No liquidity pools, no oracles. Direct borrower-lender inscriptions with pro-rata interest on early repayment.
 - **OTC Swaps** — Set duration to 0 for instant trustless asset exchanges.
 - **Multi-Asset** — Mix ERC-20, ERC-721, ERC-1155, and ERC-4626 in a single inscription.
 - **Multi-Lender** — Inscriptions can be partially filled by multiple lenders via ERC-1155 shares.
@@ -20,7 +20,7 @@ Stela is a trustless peer-to-peer lending and OTC swap protocol. Borrowers creat
 ```
 1. Create    — Borrower posts an inscription (collateral, debt, interest, duration)
 2. Sign      — Lender fills the inscription (full or partial)
-3. Repay     — Borrower repays principal + interest before the deadline
+3. Repay     — Borrower repays principal + pro-rata interest before the deadline
 4. Redeem    — Lender burns shares to claim repaid assets
    — OR —
 4. Liquidate — If unpaid, anyone triggers liquidation; lender claims collateral
@@ -42,7 +42,7 @@ Requires [Scarb](https://docs.swmansion.com/scarb/download.html) and [StarkNet F
 
 ```bash
 scarb build          # Compile contracts
-snforge test         # Run all tests (163 tests)
+snforge test         # Run all tests (167 tests)
 ```
 
 ## Project Structure
@@ -63,7 +63,7 @@ src/
 │   ├── iregistry.cairo      # SNIP-14 registry interface
 │   └── ierc721_mintable.cairo
 ├── utils/
-│   └── share_math.cairo     # ERC-4626 style share conversion with virtual offset
+│   └── share_math.cairo     # ERC-4626 style share conversion, pro-rata interest math
 └── mocks/                   # Mock contracts for testing
 
 tests/
@@ -109,7 +109,7 @@ The contract composes several OpenZeppelin Cairo components:
 - `create_inscription(params)` — Create a new loan request or offer
 - `sign_inscription(inscription_id, issued_debt_percentage)` — Fill an inscription (full or partial)
 - `cancel_inscription(inscription_id)` — Cancel an unfilled inscription
-- `repay(inscription_id)` — Repay principal + interest within the repayment window
+- `repay(inscription_id)` — Repay principal + pro-rata interest within the repayment window
 - `liquidate(inscription_id)` — Liquidate an expired, unrepaid inscription
 - `redeem(inscription_id, shares)` — Burn shares to claim pro-rata assets
 

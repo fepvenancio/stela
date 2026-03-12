@@ -41,14 +41,18 @@ Borrower                     StelaProtocol                     Lender
    | [signed_at <= now <= signed_at + duration]                  |
    |                              |                              |
    |--- repay() ---------------->|                              |
-   |   debt + interest --------->|  1. Validate borrower         |
-   |                              |  2. Validate timing window   |
-   |                              |  3. Pull debt + interest     |
-   |                              |  4. Credit tracked balances  |
-   |                              |  5. Mark is_repaid = true    |
-   |                              |  6. Unlock TBA               |
+   |   debt (full) ------------>|  1. Validate borrower         |
+   |   interest (pro-rata) ---->|  2. Validate timing window   |
+   |                              |  3. Pull debt (full amount)  |
+   |                              |  4. Pull interest (pro-rata) |
+   |                              |     ceil(interest * elapsed  |
+   |                              |          / duration)         |
+   |                              |  5. Credit tracked balances  |
+   |                              |  6. Mark is_repaid = true    |
+   |                              |  7. Return collateral        |
+   |                              |  8. Unlock TBA               |
    |                              |     [InscriptionRepaid]      |
-   |   collateral unlocked <-----|                              |
+   |   collateral returned <----|                              |
    |                              |                              |
    |                              |<--- redeem(shares) ---------|
    |                              |  1. Validate redeemable      |

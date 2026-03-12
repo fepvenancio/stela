@@ -776,6 +776,10 @@ ERC721 mint contract. 300 max supply, sequential IDs 1-300. Constructor mints 50
 
 Fees are transferred directly to a treasury address via simple `transfer()`. There is no FeeVault contract. Genesis NFT holders receive fee **discounts** rather than fee revenue.
 
+### Pro-Rata Interest on Early Repayment
+
+Interest is pro-rated by elapsed time: `ceil(full_interest * elapsed / duration)`. Rounds UP (ceiling) to protect lenders. Swaps (duration=0) always charge full interest. See `src/utils/share_math.cairo` for `pro_rata_interest()` and `div_ceil()`.
+
 ### Fee Constants in `src/stela.cairo`
 
 All fees charged at settle only. No redeem fee. No share dilution (`inscription_fee` removed).

@@ -123,10 +123,17 @@ On every fill:
 - Callable by the borrower only (`assert(caller == inscription.borrower)`)
 - Conditions: inscription is active (`signed_at > 0`), not already repaid, not liquidated
 - Timing: repayment window is `[signed_at, signed_at + duration]` inclusive. The borrower CAN repay exactly on the deadline. Liquidation uses strict `>` so there is no overlap.
-- Pulls debt + interest from borrower to the Stela contract (proportional to `issued_debt_percentage`)
-- Credits per-inscription balance tracking maps
+- Pulls debt (always full amount proportional to `issued_debt_percentage`) from borrower
+- Pulls interest **pro-rated** by elapsed time: `ceil(full_interest * elapsed / duration)`
+  - Rounds UP (ceiling division) to protect lenders — borrower never underpays
+  - `elapsed = block_timestamp - signed_at`
+  - If `elapsed >= duration`, full interest is charged
+  - If `duration == 0` (swap), full interest is charged (no time dimension)
+  - Minimum charge: 1 wei per interest asset (for any non-zero elapsed time)
+- Credits per-inscription balance tracking maps with actual amounts transferred
 - Marks inscription as repaid
-- Unlocks collateral (TBA releases assets back to borrower)
+- Auto-returns collateral from locker to borrower
+- Unlocks locker (TBA releases remaining assets)
 - Emits `InscriptionRepaid` event
 
 ### 5. Liquidate
@@ -167,6 +174,14 @@ scale_by_percentage(value, percentage):
 
 calculate_fee_shares(shares, fee_bps):
   return (shares * fee_bps) / MAX_BPS
+
+div_ceil(a, b):
+  return (a + b - 1) / b
+
+pro_rata_interest(amount, elapsed, duration):
+  if amount == 0 || elapsed == 0: return 0
+  if elapsed >= duration: return amount
+  return div_ceil(amount * elapsed, duration)
 ```
 
 ## Constants
