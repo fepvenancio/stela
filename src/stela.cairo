@@ -34,7 +34,7 @@ pub mod StelaProtocol {
 
     // Local imports
     use crate::types::asset::{Asset, AssetType};
-    use crate::utils::share_math::{MAX_BPS, convert_to_shares, scale_by_percentage};
+    use crate::utils::share_math::{MAX_BPS, convert_to_shares, scale_by_percentage, pro_rata_interest};
 
     /// Maximum number of assets per type (debt, interest, collateral) in a single inscription.
     const MAX_ASSETS: u32 = 10;
@@ -507,7 +507,8 @@ pub mod StelaProtocol {
             assert(timestamp >= inscription.signed_at, Errors::REPAY_TOO_EARLY);
             assert(timestamp <= due_to, Errors::REPAY_WINDOW_CLOSED);
 
-            // FIX: Pull repayment proportional to issued_debt_percentage, and track balances
+            // Pull repayment: debt in full, interest pro-rated to elapsed time
+            let elapsed = timestamp - inscription.signed_at;
             self
                 ._pull_repayment(
                     caller,
@@ -515,6 +516,8 @@ pub mod StelaProtocol {
                     inscription.debt_asset_count,
                     inscription.interest_asset_count,
                     inscription.issued_debt_percentage,
+                    elapsed,
+                    inscription.duration,
                 );
 
             // Mark as repaid
@@ -1760,6 +1763,9 @@ pub mod StelaProtocol {
         }
 
         /// Pull repayment (debt + interest) from caller to this contract.
+        /// Debt is always repaid in full (proportional to issued percentage).
+        /// Interest is pro-rated: ceil(full_interest * elapsed / duration).
+        /// If duration == 0 (swap), full interest is charged (no time dimension).
         fn _pull_repayment(
             ref self: ContractState,
             from: ContractAddress,
@@ -1767,10 +1773,12 @@ pub mod StelaProtocol {
             debt_count: u32,
             interest_count: u32,
             issued_percentage: u256,
+            elapsed: u64,
+            duration: u64,
         ) {
             let this_contract = get_contract_address();
 
-            // Pull debt — proportional to how much was actually issued
+            // Pull debt — always full amount proportional to issued percentage
             let mut i: u32 = 0;
             while i < debt_count {
                 let asset = self.inscription_debt_assets.read((inscription_id, i));
@@ -1783,12 +1791,24 @@ pub mod StelaProtocol {
                 i += 1;
             }
 
-            // Pull interest — proportional to how much was actually issued
+            // Pull interest — pro-rated by elapsed time (rounds UP to protect lenders)
+            // Interest assets are always ERC20/ERC4626 (enforced by _validate_no_nfts)
             let mut j: u32 = 0;
             while j < interest_count {
                 let asset = self.inscription_interest_assets.read((inscription_id, j));
-                let amount = scale_by_percentage(asset.value, issued_percentage);
-                self._process_payment(asset, from, this_contract, issued_percentage);
+                let full_amount = scale_by_percentage(asset.value, issued_percentage);
+
+                // Pro-rate: if duration == 0 (swap) or elapsed >= duration, charge full
+                let amount = if duration == 0 {
+                    full_amount
+                } else {
+                    pro_rata_interest(full_amount, elapsed, duration)
+                };
+
+                if amount > 0 {
+                    let erc20 = IERC20Dispatcher { contract_address: asset.asset };
+                    erc20.transfer_from(from, this_contract, amount);
+                }
 
                 let current = self.inscription_interest_balance.read((inscription_id, j));
                 self.inscription_interest_balance.write((inscription_id, j), current + amount);

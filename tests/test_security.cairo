@@ -500,11 +500,12 @@ fn test_lender_creation_full_lifecycle() {
     let lender_shares = get_shares(stela_address, LENDER(), inscription_id);
     assert(lender_shares > 0, 'lender has shares');
 
-    // === 3. Borrower repays ===
+    // === 3. Borrower repays at full duration (pro-rata = 100%) ===
     setup_borrower_for_repayment(@setup, BORROWER(), debt_amount, interest_amount);
 
     stop_cheat_block_timestamp_global();
-    start_cheat_block_timestamp_global(50000);
+    // signed_at=1000, duration=86400 → repay at 87400 for full interest
+    start_cheat_block_timestamp_global(87400);
 
     start_cheat_caller_address(stela_address, BORROWER());
     stela.repay(inscription_id);
@@ -517,7 +518,7 @@ fn test_lender_creation_full_lifecycle() {
     stela.redeem(inscription_id, lender_shares);
     stop_cheat_caller_address(stela_address);
 
-    // Verify: lender got back debt + interest (fee=0, so exact amounts)
+    // Verify: lender got back debt + interest (fee=0, full duration, so exact amounts)
     assert(setup.debt_token.balance_of(LENDER()) == debt_amount, 'lender got debt back');
     assert(setup.interest_token.balance_of(LENDER()) == interest_amount, 'lender got interest');
     assert(get_shares(stela_address, LENDER(), inscription_id) == 0, 'shares burned');
@@ -679,10 +680,11 @@ fn test_partial_redeem() {
 
     let total_shares = get_shares(stela_address, LENDER(), inscription_id);
 
-    // Repay
+    // Repay at full duration for exact amounts (pro-rata = 100%)
     setup_borrower_for_repayment(@setup, BORROWER(), debt_amount, interest_amount);
     stop_cheat_block_timestamp_global();
-    start_cheat_block_timestamp_global(50000);
+    // signed_at=1000, duration=86400 → repay at 87400 for full interest
+    start_cheat_block_timestamp_global(87400);
 
     start_cheat_caller_address(stela_address, BORROWER());
     stela.repay(inscription_id);
@@ -712,7 +714,7 @@ fn test_partial_redeem() {
     let debt_after_second = setup.debt_token.balance_of(LENDER());
     let interest_after_second = setup.interest_token.balance_of(LENDER());
 
-    // Total received should equal original amounts (fee=0)
+    // Total received should equal original amounts (fee=0, full duration repay)
     assert(debt_after_second == debt_amount, 'got all debt back');
     assert(interest_after_second == interest_amount, 'got all interest back');
 
@@ -843,10 +845,11 @@ fn test_exact_token_amounts_lifecycle() {
     let locker = stela.get_locker(inscription_id);
     assert(setup.collateral_token.balance_of(locker) == collateral_amount, 'locker holds collateral');
 
-    // Repay
+    // Repay at full duration to get exact amounts (pro-rata = 100%)
     setup_borrower_for_repayment(@setup, BORROWER(), debt_amount, interest_amount);
     stop_cheat_block_timestamp_global();
-    start_cheat_block_timestamp_global(50000);
+    // signed_at=1000, duration=86400, so repay at 1000+86400=87400 for full interest
+    start_cheat_block_timestamp_global(87400);
 
     start_cheat_caller_address(stela_address, BORROWER());
     stela.repay(inscription_id);
@@ -874,6 +877,134 @@ fn test_exact_token_amounts_lifecycle() {
     assert(setup.interest_token.balance_of(LENDER()) == interest_amount, 'lender got exact interest');
     assert(setup.debt_token.balance_of(stela_address) == 0, 'stela drained of debt');
     assert(setup.interest_token.balance_of(stela_address) == 0, 'stela drained of interest');
+
+    stop_cheat_block_timestamp_global();
+}
+
+// ============================================================
+//       PRO-RATA INTEREST ON EARLY REPAYMENT
+// ============================================================
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+fn test_early_repay_pro_rata_interest() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    let debt_amount: u256 = 10000;
+    let collateral_amount: u256 = 5000;
+    let interest_amount: u256 = 2000;
+
+    setup_borrower_with_collateral(@setup, BORROWER(), collateral_amount);
+    setup_lender_with_debt(@setup, LENDER(), debt_amount);
+
+    start_cheat_block_timestamp_global(1000);
+
+    // Create inscription with 86400s duration
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(setup.debt_token_address, debt_amount)],
+        interest_assets: array![create_erc20_asset(setup.interest_token_address, interest_amount)],
+        collateral_assets: array![create_erc20_asset(setup.collateral_token_address, collateral_amount)],
+        duration: 86400,
+        deadline: 2000,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    // Sign
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+    stop_cheat_caller_address(stela_address);
+
+    // Repay at exactly halfway: elapsed = 43200, duration = 86400
+    // Pro-rata interest = ceil(2000 * 43200 / 86400) = ceil(1000) = 1000 (exact half)
+    setup_borrower_for_repayment(@setup, BORROWER(), debt_amount, interest_amount);
+    stop_cheat_block_timestamp_global();
+    start_cheat_block_timestamp_global(44200); // signed_at=1000, elapsed=43200
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    stela.repay(inscription_id);
+    stop_cheat_caller_address(stela_address);
+
+    // Borrower should have kept the unused interest (2000 - 1000 = 1000)
+    let borrower_interest_left = setup.interest_token.balance_of(BORROWER());
+    assert(borrower_interest_left == 1000, 'borrower saves half interest');
+
+    // Stela should hold exactly the pro-rata interest
+    let stela_interest = setup.interest_token.balance_of(stela_address);
+    assert(stela_interest == 1000, 'stela holds pro-rata interest');
+
+    // Debt should still be fully repaid
+    assert(setup.debt_token.balance_of(stela_address) == debt_amount, 'debt fully repaid');
+
+    // Collateral returned
+    assert(setup.collateral_token.balance_of(BORROWER()) == collateral_amount, 'collateral returned');
+
+    // Redeem — lender gets pro-rata interest, not full
+    let lender_shares = get_shares(stela_address, LENDER(), inscription_id);
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.redeem(inscription_id, lender_shares);
+    stop_cheat_caller_address(stela_address);
+
+    assert(setup.debt_token.balance_of(LENDER()) == debt_amount, 'lender got full debt');
+    assert(setup.interest_token.balance_of(LENDER()) == 1000, 'lender got pro-rata interest');
+
+    stop_cheat_block_timestamp_global();
+}
+
+#[test]
+#[feature("deprecated-starknet-consts")]
+fn test_early_repay_rounds_up_for_lender() {
+    let setup = deploy_full_setup();
+    let stela = setup.stela;
+    let stela_address = setup.stela_address;
+
+    let debt_amount: u256 = 10000;
+    let collateral_amount: u256 = 5000;
+    let interest_amount: u256 = 1000; // 1000 interest over 86400s
+
+    setup_borrower_with_collateral(@setup, BORROWER(), collateral_amount);
+    setup_lender_with_debt(@setup, LENDER(), debt_amount);
+
+    start_cheat_block_timestamp_global(1000);
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    let params = InscriptionParams {
+        is_borrow: true,
+        debt_assets: array![create_erc20_asset(setup.debt_token_address, debt_amount)],
+        interest_assets: array![create_erc20_asset(setup.interest_token_address, interest_amount)],
+        collateral_assets: array![create_erc20_asset(setup.collateral_token_address, collateral_amount)],
+        duration: 86400,
+        deadline: 2000,
+        multi_lender: false,
+    };
+    let inscription_id = stela.create_inscription(params);
+    stop_cheat_caller_address(stela_address);
+
+    start_cheat_caller_address(stela_address, LENDER());
+    stela.sign_inscription(inscription_id, MAX_BPS);
+    stop_cheat_caller_address(stela_address);
+
+    // Repay at 1 second elapsed — ceil(1000 * 1 / 86400) = ceil(0.01157..) = 1
+    setup_borrower_for_repayment(@setup, BORROWER(), debt_amount, interest_amount);
+    stop_cheat_block_timestamp_global();
+    start_cheat_block_timestamp_global(1001); // elapsed = 1
+
+    start_cheat_caller_address(stela_address, BORROWER());
+    stela.repay(inscription_id);
+    stop_cheat_caller_address(stela_address);
+
+    // At least 1 wei of interest charged (ceiling division)
+    let stela_interest = setup.interest_token.balance_of(stela_address);
+    assert(stela_interest == 1, 'min 1 wei interest charged');
+
+    // Borrower keeps 999
+    let borrower_left = setup.interest_token.balance_of(BORROWER());
+    assert(borrower_left == 999, 'borrower keeps 999');
 
     stop_cheat_block_timestamp_global();
 }

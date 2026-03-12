@@ -85,11 +85,41 @@ pub fn calculate_fee_shares(shares: u256, fee_bps: u256) -> u256 {
     (shares * fee_bps) / MAX_BPS
 }
 
+/// Ceiling division: ceil(a / b) = (a + b - 1) / b.
+/// Panics if b == 0 (Cairo built-in).
+pub fn div_ceil(a: u256, b: u256) -> u256 {
+    (a + b - 1) / b
+}
+
+/// Pro-rata interest for early repayment.
+/// Rounds UP (ceiling) to protect lenders — borrower never underpays.
+///
+/// Formula: ceil(amount * elapsed / duration)
+///
+/// Edge cases:
+/// - amount == 0 → 0
+/// - elapsed == 0 → 0 (instant repay, no interest)
+/// - elapsed >= duration → amount (full interest, capped)
+/// - duration == 0 → caller must handle (swaps use full interest)
+///
+/// Overflow safety: amount (u128 max) * elapsed (u64 max) ≈ 2^192, fits in u256.
+pub fn pro_rata_interest(amount: u256, elapsed: u64, duration: u64) -> u256 {
+    if amount == 0 || elapsed == 0 {
+        return 0;
+    }
+    if elapsed >= duration {
+        return amount;
+    }
+    let elapsed_u256: u256 = elapsed.into();
+    let duration_u256: u256 = duration.into();
+    div_ceil(amount * elapsed_u256, duration_u256)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         MAX_BPS, VIRTUAL_SHARE_OFFSET, calculate_fee_shares, convert_to_percentage, convert_to_shares,
-        scale_by_percentage,
+        div_ceil, pro_rata_interest, scale_by_percentage,
     };
 
     #[test]
@@ -168,5 +198,75 @@ mod tests {
         // 1,000,000 shares with 100 BPS fee (1%)
         let fee2 = calculate_fee_shares(1000000, 100);
         assert!(fee2 == 10000, "1% of 1,000,000 should be 10,000");
+    }
+
+    // ─── div_ceil tests ───
+
+    #[test]
+    fn test_div_ceil_exact() {
+        assert!(div_ceil(10, 5) == 2, "10/5 = 2 exact");
+        assert!(div_ceil(0, 7) == 0, "0/7 = 0");
+    }
+
+    #[test]
+    fn test_div_ceil_rounds_up() {
+        assert!(div_ceil(7, 3) == 3, "ceil(7/3) = 3");
+        assert!(div_ceil(1, 3) == 1, "ceil(1/3) = 1");
+        assert!(div_ceil(10, 3) == 4, "ceil(10/3) = 4");
+    }
+
+    // ─── pro_rata_interest tests ───
+
+    #[test]
+    fn test_pro_rata_zero_amount() {
+        assert!(pro_rata_interest(0, 100, 200) == 0, "zero amount => zero interest");
+    }
+
+    #[test]
+    fn test_pro_rata_zero_elapsed() {
+        assert!(pro_rata_interest(1000, 0, 200) == 0, "zero elapsed => zero interest");
+    }
+
+    #[test]
+    fn test_pro_rata_full_duration() {
+        // elapsed == duration => full interest
+        assert!(pro_rata_interest(1000, 200, 200) == 1000, "full duration => full interest");
+    }
+
+    #[test]
+    fn test_pro_rata_over_duration() {
+        // elapsed > duration => capped at full interest
+        assert!(pro_rata_interest(1000, 300, 200) == 1000, "over duration => capped at full");
+    }
+
+    #[test]
+    fn test_pro_rata_half_duration() {
+        // 1000 * 100 / 200 = 500 (exact)
+        assert!(pro_rata_interest(1000, 100, 200) == 500, "half duration => half interest");
+    }
+
+    #[test]
+    fn test_pro_rata_rounds_up() {
+        // 1000 * 1 / 3 = 333.33... => ceil = 334
+        assert!(pro_rata_interest(1000, 1, 3) == 334, "rounds up to protect lenders");
+    }
+
+    #[test]
+    fn test_pro_rata_one_second() {
+        // 1000 * 1 / 86400 = 0.0115... => ceil = 1
+        assert!(pro_rata_interest(1000, 1, 86400) == 1, "1 second of 1 day => at least 1 wei");
+    }
+
+    #[test]
+    fn test_pro_rata_large_amount() {
+        // u128 max * u64 halfway => fits in u256
+        let amount: u256 = 340282366920938463463374607431768211455; // u128::MAX
+        let duration: u64 = 31536000; // 1 year
+        let elapsed: u64 = 15768000; // half year
+        let result = pro_rata_interest(amount, elapsed, duration);
+        // Should be approximately half, rounded up
+        let half = amount / 2;
+        assert!(result >= half, "large amount half should be >= half");
+        assert!(result <= half + 1, "large amount half should be <= half + 1");
     }
 }
