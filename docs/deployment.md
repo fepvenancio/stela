@@ -201,13 +201,13 @@ unpause()  -- Resumes normal operation
 
 ## Contract Addresses (Sepolia)
 
-### Current Deployment (protocol-overhaul)
+### Current Deployment (pro-rata-interest-2026-03-12)
 
 | Contract | Address |
 |---|---|
-| **StelaProtocol** | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` |
+| **StelaProtocol** | `0x0109c6caae0c5b4da6e063ed6c02ae784be05aa90806501a48dcfbb213bd7c03` |
 | **StelaGenesis NFT** | `0x05acfbb98a9f8d2e177886fa02f5f329b254f6e333ab430ef53e25f4bbfbc8a3` |
-| LockerAccount (class hash) | `0x1a42b6c860becbb16fa5cd936576b98bca8e2ce26c3e279705cdf328ad4e8a5` |
+| LockerAccount (class hash) | `0xaf086083964e1590d9956bf824d22029ea2c791d1fe94e1e64d72154ac5294` |
 | Inscription NFT (MockERC721) | `0x04f2345306bf8ef1c8c1445661354ef08421aa092459445a5d6b46641237e943` |
 | SNIP-14 Registry (MockRegistry) | `0x0499c5c4929b22fbf1ebd8c500f570b2ec5bd8a43a84ee63e92bf8ac7f9f422b` |
 | Mock USDC (debt token) | `0x034a0cf09c79e7f20fb2136212f27b7dd88e91f9a24b2ac50c5c41ff6b30c59d` |
@@ -220,6 +220,8 @@ Deployer: `0x005441affcd25fe95554b13690346ebec62a27282327dd297cab01a897b08310`
 
 | Contract | Address | Tag |
 |---|---|---|
+| StelaProtocol | `0x03e88d289b9ce13e5d6e6ca5159930f9227b08cfbd004231a09a1d6f48568973` | genesis-fee-vault |
+| StelaProtocol | `0x038a0b195e011fbfd75e9bce9bbc4137ebc5296882e11c5769c333b90bda4f89` | fee-overhaul-2026-03-07 |
 | StelaProtocol | `0x00b7deedb4ab03d94f54da2e7c911c2336b19c2a4610eb98f55cd7be5a53ece0` | deposit-privacy |
 | StelaProtocol | `0x00c667d12113011a05f6271cc4bd9e7f4c3c5b90a093708801955af5a5b1e6d5` | privacy-enabled |
 | StelaProtocol | `0x021e81956fccd8463342ff7e774bf6616b40e242fe0ea09a6f38735a604ea0e0` | original |
